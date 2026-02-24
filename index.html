@@ -11,11 +11,11 @@
     <meta name="format-detection" content="telephone=no" />
     
     <!-- PWA Manifest -->
-    <link rel="manifest" href="./dist/manifest.json" />
+    <link rel="manifest" href="./docs/manifest.json" />
     
     <!-- Icons -->
-    <link rel="icon" type="image/png" sizes="192x192" href="./dist/icon-192x192.png" />
-    <link rel="apple-touch-icon" sizes="192x192" href="./dist/icon-192x192.png" />
+    <link rel="icon" type="image/png" sizes="192x192" href="./docs/icon-192x192.png" />
+    <link rel="apple-touch-icon" sizes="192x192" href="./docs/icon-192x192.png" />
     <link rel="mask-icon" href="./dist/icon-192x192.png" color="#3b82f6" />
     
     <title>我的知识库</title>
@@ -24,7 +24,7 @@
     <script>
       if ('serviceWorker' in navigator) {
         window.addEventListener('load', () => {
-          navigator.serviceWorker.register('/sw.js')
+          navigator.serviceWorker.register('./docs/sw.js')
             .then((registration) => {
               console.log('SW registered:', registration);
             })
