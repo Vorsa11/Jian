@@ -20,6 +20,58 @@ import { Button } from '@/components/ui/button';
 import { Slider } from '@/components/ui/slider';
 import { Switch } from '@/components/ui/switch';
 
+// =============== 新增：清洗函数（仅针对 txt80.com 等来源的污染文本） ===============
+function cleanNovelContent(rawText: string): string {
+  if (!rawText) return '';
+
+  let text = rawText;
+
+  // 移除常见广告、水印、声明
+  const adPatterns = [
+    /本书为八零电子书网.*?存储服务/gi,
+    /找好书，看好书，与大家分享好书，请加QQ群/gi,
+    /八零电子书\s*www\.txt80\.com/gi,
+    /小说下载尽在\s*http:\/\/www\.txt80\.com/gi,
+    /手机访问\s*m\.txt80\.com/gi,
+    /【本作品来自互联网.*?】/gi,
+    /内容版权归作者所有/gi,
+    /用户上传之内容开始/gi,
+    /---------------------------/g,
+    /★—+★/g,
+    /丨[^\n]*?丨/g,
+    /\s*http[s]?:\/\/[^\s]+/gi,
+    /QQ群[:：]?\s*\d+/gi,
+  ];
+
+  adPatterns.forEach(pattern => {
+    text = text.replace(pattern, '');
+  });
+
+  // 合并多余空行
+  text = text.replace(/\n{3,}/g, '\n\n');
+
+  // 清理每行首尾空格
+  text = text
+    .split('\n')
+    .map(line => line.trim())
+    .join('\n');
+
+  // 移除纯符号行（不含中英文且较短）
+  text = text
+    .split('\n')
+    .filter(line => {
+      if (line === '') return true;
+      return /[a-zA-Z\u4e00-\u9fa5]/.test(line) || line.length > 30;
+    })
+    .join('\n');
+
+  // 移除开头空白
+  text = text.replace(/^\s*\n/, '');
+
+  return text;
+}
+// ==============================================================================
+
 const FONTS = [
   { name: '系统默认', value: 'system-ui, -apple-system, sans-serif' },
   { name: '宋体', value: '"Noto Serif SC", "SimSun", serif' },
@@ -200,15 +252,19 @@ const extractLinesFromContent = (content: string, start: number, end: number): s
 };
 
 export function TextReader({ content, title, bookId, onClose }: TextReaderProps) {
+  // =============== 新增：清洗传入的 content ===============
+  const cleanedContent = useMemo(() => cleanNovelContent(content), [content]);
+  // =====================================================
+
   // 🔧 修复点 2: 增强空内容检测（包括纯空白字符）
-  const isContentEmpty = !content || content.trim().length === 0;
+  const isContentEmpty = !cleanedContent || cleanedContent.trim().length === 0;
 
   if (isContentEmpty) {
     return (
       <div className="fixed inset-0 z-50 flex items-center justify-center bg-background">
         <div className="text-center p-6 max-w-md">
           <p className="text-muted-foreground mb-4">
-            {content ? '文件内容为空或仅包含空白字符' : '未加载到内容'}
+            {cleanedContent ? '文件内容为空或仅包含空白字符' : '未加载到内容'}
           </p>
           <Button onClick={onClose} className="mt-4">返回</Button>
         </div>
@@ -239,7 +295,8 @@ export function TextReader({ content, title, bookId, onClose }: TextReaderProps)
   const isScrolling = useRef(false);
   const scrollTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const chapters = useMemo(() => parseChapters(content), [content]);
+  // 使用 cleanedContent 替代原 content
+  const chapters = useMemo(() => parseChapters(cleanedContent), [cleanedContent]);
   const currentTheme = THEMES[settings.theme] || THEMES[0];
   
   const currentChapterData = chapters[currentChapter] || chapters[0];
@@ -542,7 +599,7 @@ export function TextReader({ content, title, bookId, onClose }: TextReaderProps)
       chapter.endLine + 1
     );
 
-    const displayLines = extractLinesFromContent(content, startGlobalLine, endGlobalLine);
+    const displayLines = extractLinesFromContent(cleanedContent, startGlobalLine, endGlobalLine); // 使用 cleanedContent
 
     return (
       <div style={{ 
