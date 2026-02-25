@@ -314,7 +314,6 @@ export function TextReader({ content, title, bookId, onClose }: TextReaderProps)
       if (showSettings || showChapters) return;
       switch (e.key) {
         case 'ArrowRight':
-        case 'ArrowDown':
         case ' ':
         case 'PageDown':
           e.preventDefault();
