@@ -131,14 +131,11 @@ function App() {
   };
 
   const handleFileUpload = async (bookId: string, file: File) => {
-    // Support all file types
-    const maxSize = 100 * 1024 * 1024; // 100MB limit
-    
+    const maxSize = 100 * 1024 * 1024;
     if (file.size > maxSize) {
       toast.error('文件大小超过100MB限制');
       return;
     }
-    
     await uploadFile(bookId, file);
     toast.success('文件上传成功');
   };
@@ -153,9 +150,7 @@ function App() {
     try {
       const file = await downloadFile(book.fileId);
       if (file) {
-        // Cleanup old URL
         if (pdfUrl) URL.revokeObjectURL(pdfUrl);
-
         const blob = new Blob([file.data], { type: file.type });
         const url = URL.createObjectURL(blob);
         setPdfUrl(url);
@@ -213,13 +208,11 @@ function App() {
 
   const handleDownloadWithAnnotations = (includeAnnotations: boolean) => {
     if (pdfUrl && readingBook?.fileName) {
-      // Download PDF file
       const a = document.createElement('a');
       a.href = pdfUrl;
       a.download = readingBook.fileName;
       a.click();
 
-      // Download annotations if requested
       if (includeAnnotations) {
         const bookAnnotations = getBookPDFAnnotations(readingBook.id);
         if (bookAnnotations.length > 0) {
@@ -269,9 +262,7 @@ function App() {
   };
 
   const handleSync = () => {
-    // Generate new sync code if not exists
     const syncCode = sync.syncCode || regenerateSyncCode();
-    // Upload current data to cloud
     const success = syncDataToCloud(syncCode, {
       books: filteredBooks,
       categories,
@@ -315,8 +306,8 @@ function App() {
   return (
     <div className="min-h-screen bg-background flex flex-col">
       {/* Header */}
-      <header className="sticky top-0 z-50 w-full border-b bg-background/95 backdrop-blur">
-        <div className="container flex h-14 items-center justify-between px-4">
+      <header className="sticky top-0 z-50 w-full border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
+        <div className="container mx-auto max-w-6xl px-4 flex h-14 items-center justify-between">
           <div className="flex items-center gap-2">
             <BookOpen className="h-6 w-6 text-primary" />
             <h1 className="text-lg font-semibold">简</h1>
@@ -324,7 +315,6 @@ function App() {
           </div>
           
           <div className="flex items-center gap-2">
-            {/* Stats Button */}
             <Button 
               variant="ghost" 
               size="icon" 
@@ -335,16 +325,13 @@ function App() {
               <PieChart className="h-5 w-5" />
             </Button>
             
-            {/* Pomodoro Timer */}
             <PomodoroTimer />
 
-            {/* Sync Button */}
             <Button variant="ghost" size="sm" onClick={handleSync} className="gap-2">
               <RefreshCw className="h-4 w-4" />
               <span className="hidden sm:inline">同步</span>
             </Button>
             
-            {/* Settings Button */}
             <Sheet open={isSettingsOpen} onOpenChange={setIsSettingsOpen}>
               <SheetTrigger asChild>
                 <Button variant="ghost" size="icon">
@@ -356,7 +343,6 @@ function App() {
                   <SheetTitle>设置</SheetTitle>
                 </SheetHeader>
                 <div className="py-4 space-y-6">
-                  {/* Sync Section */}
                   <div className="space-y-3">
                     <h3 className="text-sm font-medium flex items-center gap-2">
                       <Smartphone className="h-4 w-4" />
@@ -381,7 +367,6 @@ function App() {
                     </div>
                   </div>
 
-                  {/* Data Management */}
                   <div className="space-y-3">
                     <h3 className="text-sm font-medium">数据管理</h3>
                     <div className="space-y-2">
@@ -412,14 +397,12 @@ function App() {
                     </div>
                   </div>
 
-                  {/* Categories */}
                   <SettingsPanel
                     categories={categories}
                     onAddCategory={addCategory}
                     onDeleteCategory={deleteCategory}
                   />
 
-                  {/* About */}
                   <div className="pt-4 border-t text-center">
                     <p className="text-sm text-muted-foreground">简 v1.4.0</p>
                     <p className="text-xs text-muted-foreground mt-1">简约个人知识管理系统</p>
@@ -427,16 +410,14 @@ function App() {
                 </div>
               </SheetContent>
             </Sheet>
-
           </div>
         </div>
       </header>
 
       {/* Main Content */}
-      <main className="flex-1 mx-auto max-w-screen px-4 py-4 pb-24">
+      <main className="flex-1 container mx-auto max-w-6xl px-4 py-6 pb-28">
         <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
-          {/* Schedule Tab */}
-          <TabsContent value="schedule" className="mt-0 animate-in fade-in slide-in-from-bottom-4 duration-300">
+          <TabsContent value="schedule" className="mt-0">
             <SchedulePanel
               notes={notes}
               onAddNote={addNote}
@@ -446,13 +427,11 @@ function App() {
             />
           </TabsContent>
 
-          {/* Coding Tab */}
-          <TabsContent value="coding" className="mt-0 animate-in fade-in slide-in-from-bottom-4 duration-300">
+          <TabsContent value="coding" className="mt-0">
             <CodingPanel />
           </TabsContent>
 
-          {/* Library Tab */}
-          <TabsContent value="library" className="mt-0 animate-in fade-in slide-in-from-bottom-4 duration-300">
+          <TabsContent value="library" className="mt-0">
             {selectedBook ? (
               <BookDetail
                 book={selectedBook}
@@ -507,18 +486,21 @@ function App() {
                 onUploadCover={handleUploadCover}
               />
             ) : (
-              <div className="flex flex-col items-center gap-3 w-full max-w-2xl mx-auto">
-                <SearchBar
-                  value={filter.searchQuery || ''}
-                  onChange={handleSearch}
-                  placeholder="搜索书名、作者、标签..."
-                />
+              <div className="space-y-6">
+                <div className="max-w-2xl mx-auto w-full">
+                  <SearchBar
+                    value={filter.searchQuery || ''}
+                    onChange={handleSearch}
+                    placeholder="搜索书名、作者、标签..."
+                  />
+                </div>
+
                 {filteredBooks.length === 0 ? (
-                  <div className="text-center py-16 space-y-4">
+                  <div className="text-center py-16 space-y-4 max-w-md mx-auto">
                     <Library className="mx-auto h-12 w-12 text-muted-foreground" />
                     <p className="text-lg text-muted-foreground">还没有书籍</p>
-                    <p className="text-sm text-muted-foreground max-w-md mx-auto">
-                      点击右下角的 <Upload className="inline h-4 w-4 mx-1" /> 按钮，添加你的第一本书籍。
+                    <p className="text-sm text-muted-foreground">
+                      点击右下角按钮添加你的第一本书
                     </p>
                   </div>
                 ) : (
@@ -529,9 +511,7 @@ function App() {
                     onFilterChange={handleFilterChange}
                     onBookClick={handleBookClick}
                     allTags={allTags}
-                    onEditBook={(book) => {
-                      setSelectedBookId(book.id);
-                    }}
+                    onEditBook={(book) => setSelectedBookId(book.id)}
                     onDeleteBook={(bookId) => {
                       deleteBook(bookId);
                       toast.success('书籍已删除');
@@ -542,8 +522,7 @@ function App() {
             )}
           </TabsContent>
 
-          {/* Projects Tab */}
-          <TabsContent value="projects" className="mt-0 animate-in fade-in slide-in-from-bottom-4 duration-300">
+          <TabsContent value="projects" className="mt-0">
             <ProjectsPanel
               projects={projects}
               onAddProject={addProject}
@@ -556,53 +535,52 @@ function App() {
             />
           </TabsContent>
 
-          {/* Stats Tab */}
-          <TabsContent value="stats" className="mt-0 animate-in fade-in slide-in-from-bottom-4 duration-300">
+          <TabsContent value="stats" className="mt-0">
             <StatsPanel stats={stats} />
           </TabsContent>
         </Tabs>
 
-          {/* Floating Add Button - ONLY in library list view */}
-          {activeTab === 'library' && !selectedBook && (
-            <button
-              onClick={() => setIsAddDialogOpen(true)}
-              className="fixed bottom-20 right-6 z-40 w-12 h-12 rounded-full bg-primary text-primary-foreground shadow-lg hover:shadow-xl hover:bg-primary/90 transition-all duration-200 flex items-center justify-center animate-in fade-in slide-in-from-bottom-2"
-              aria-label="添加书籍"
-            >
-              <Upload className="h-6 w-6" />
-            </button>
+        {/* Floating Action Button - ONLY in library list view */}
+        {activeTab === 'library' && !selectedBook && (
+          <button
+            onClick={() => setIsAddDialogOpen(true)}
+            className="fixed bottom-20 right-6 z-40 w-12 h-12 rounded-full bg-primary text-primary-foreground shadow-lg hover:shadow-xl hover:bg-primary/90 transition-all duration-200 flex items-center justify-center"
+            aria-label="添加书籍"
+          >
+            <Upload className="h-6 w-6" />
+          </button>
         )}
       </main>
 
-          {/* Bottom Navigation */}
-          <nav className="fixed bottom-0 left-0 right-0 max-w-screen mx-auto border-t bg-background/95 backdrop-blur safe-area-pb z-50">
-            <div className="container px-4">
-              <div className="flex justify-around h-16 items-center">
-                {navItems.map((item) => {
-                  const Icon = item.icon;
-                  const isActive = activeTab === item.id;
-                  return (
-                    <button
-                      key={item.id}
-                      onClick={() => {
-                        setActiveTab(item.id);
-                        handleBackToList();
-                      }}
-                      className={`flex flex-col items-center gap-1 px-2 py-2 transition-all duration-200 ${
-                        isActive ? 'text-primary' : 'text-muted-foreground'
-                      }`}
-                    >
-                      <Icon className="h-5 w-5" />
-                      <span className="text-[10px] leading-none">{item.label}</span>
-                      {isActive && <div className="absolute bottom-1 w-4 h-0.5 bg-primary rounded-full" />}
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-          </nav>
+      {/* Bottom Navigation */}
+      <nav className="fixed bottom-0 left-0 right-0 border-t bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60 z-50">
+        <div className="container mx-auto max-w-6xl px-4">
+          <div className="flex justify-around h-16 items-center">
+            {navItems.map((item) => {
+              const Icon = item.icon;
+              const isActive = activeTab === item.id;
+              return (
+                <button
+                  key={item.id}
+                  onClick={() => {
+                    setActiveTab(item.id);
+                    handleBackToList();
+                  }}
+                  className={`flex flex-col items-center gap-1 px-2 py-2 transition-colors duration-200 ${
+                    isActive ? 'text-primary' : 'text-muted-foreground'
+                  }`}
+                >
+                  <Icon className="h-5 w-5" />
+                  <span className="text-xs font-medium leading-none">{item.label}</span>
+                  {isActive && <div className="absolute bottom-1 w-6 h-0.5 bg-primary rounded-full" />}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      </nav>
 
-      {/* Add Book Dialog */}
+      {/* Dialogs */}
       <AddBookDialog
         open={isAddDialogOpen}
         onOpenChange={setIsAddDialogOpen}
@@ -611,7 +589,6 @@ function App() {
         allTags={allTags}
       />
 
-      {/* PDF Viewer Dialog */}
       <Dialog open={isReadingPDF} onOpenChange={setIsReadingPDF}>
         <DialogContent className="max-w-5xl h-[90vh] p-0 flex flex-col" showCloseButton={false}>
           <DialogHeader className="p-4 border-b flex flex-row items-center justify-between">
@@ -636,7 +613,6 @@ function App() {
         </DialogContent>
       </Dialog>
 
-      {/* Text Reader */}
       {isReadingText && readingBook && (
         <TextReader
           content={textContent}
@@ -649,7 +625,6 @@ function App() {
         />
       )}
 
-      {/* Sync Dialog */}
       <Dialog open={isSyncOpen} onOpenChange={setIsSyncOpen}>
         <DialogContent>
           <DialogHeader>
@@ -678,18 +653,13 @@ function App() {
 
       <Toaster 
         position="top-center"
-        toastOptions={{
-          duration: 2000,
-        }}
-        style={{
-          top: '20%',
-        }}
+        toastOptions={{ duration: 2000 }}
+        style={{ top: '20%' }}
       />
     </div>
   );
 }
 
-// Helper function for generating IDs
 function generateId() {
   return `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
 }
