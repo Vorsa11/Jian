@@ -1,28 +1,27 @@
-/* App.css - 全局样式主文件 (合并自 global.css 与原 App.css) */
+/* App.css - 全局样式主文件 (优化为原生应用风格) */
 
 /* ================== 基础重置与变量定义 ================== */
 :root {
-  --color-primary: #3b82f6;
+  --color-primary: #007aff; /* 更接近 iOS 蓝 */
   --color-bg: #ffffff;
-  --color-bg-secondary: #f9fafb;
-  --color-text: #111827;
-  --color-text-secondary: #6b7280;
-  --color-border: #e5e7eb;
-  --radius-md: 8px;
-  --radius-lg: 12px;
-  --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
-  --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -2px rgba(0, 0, 0, 0.1);
+  --color-bg-secondary: #f5f5f7; /* iOS 系统浅灰 */
+  --color-text: #1d1d1f;
+  --color-text-secondary: #86868b;
+  --color-border: #c6c6c8;
+  --radius-md: 12px; /* 原生应用常用大圆角 */
+  --radius-lg: 16px;
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.05);
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.08);
   --transition-fast: all 0.15s ease;
-  --transition-normal: all 0.3s cubic-bezier(0.25, 0.8, 0.25, 1);
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --color-bg: #111827;
-    --color-bg-secondary: #1f2937;
-    --color-text: #f9fafb;
-    --color-text-secondary: #d1d5db;
-    --color-border: #374151;
+    --color-bg: #000000;
+    --color-bg-secondary: #1c1c1e;
+    --color-text: #f5f5f7;
+    --color-text-secondary: #aeaeb2;
+    --color-border: #3a3a3c;
   }
 }
 
@@ -36,32 +35,31 @@
 
 html, body, #root {
   height: 100%;
-  overscroll-behavior-y: none; /* 阻止下拉刷新干扰 */
+  overscroll-behavior-y: none;
 }
 
 body {
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
   background-color: var(--color-bg);
   color: var(--color-text);
-  line-height: 1.6;
+  line-height: 1.5;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-  touch-action: manipulation; /* 提升移动端点击响应速度 */
+  touch-action: manipulation;
+  /* 移除默认滚动条（原生应用无滚动条） */
+  scrollbar-width: none; /* Firefox */
+}
+body::-webkit-scrollbar {
+  display: none; /* Chrome/Safari */
 }
 
-/* ================== 全局过渡与交互优化 ================== */
-* {
-  transition-property: background-color, border-color, color, fill, stroke, opacity, box-shadow, transform;
-  transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
-  transition-duration: 150ms;
-}
-
+/* ================== 全局过渡 ================== */
 button, a, input, textarea {
   outline: none;
   -webkit-tap-highlight-color: transparent;
 }
 
-/* ================== 工具类 (Utility Classes) ================== */
+/* ================== 工具类 ================== */
 .safe-area-pb {
   padding-bottom: env(safe-area-inset-bottom, 16px);
 }
@@ -81,10 +79,10 @@ button, a, input, textarea {
 
 .card-hover {
   cursor: pointer;
+  transition: transform 0.2s ease, background-color 0.2s ease;
 }
-.card-hover:hover {
-  transform: translateY(-2px);
-  box-shadow: var(--shadow-md);
+.card-hover:active {
+  transform: scale(0.98); /* 原生点击压感反馈 */
 }
 
 .text-primary {
@@ -111,40 +109,10 @@ button, a, input, textarea {
   box-shadow: var(--shadow-sm);
 }
 
-.shadow-md {
-  box-shadow: var(--shadow-md);
-}
-
-.transition-fast {
-  transition: var(--transition-fast);
-}
-
-.transition-normal {
-  transition: var(--transition-normal);
-}
-
-/* ================== 滚动条美化 (仅桌面端) ================== */
-@media (hover: hover) and (pointer: fine) {
-  ::-webkit-scrollbar {
-    width: 6px;
-    height: 6px;
-  }
-  ::-webkit-scrollbar-track {
-    background: transparent;
-  }
-  ::-webkit-scrollbar-thumb {
-    background: var(--color-border);
-    border-radius: 3px;
-  }
-  ::-webkit-scrollbar-thumb:hover {
-    background: var(--color-text-secondary);
-  }
-}
-
-/* ================== 移动端优先媒体查询 ================== */
+/* ================== 移动端优先 ================== */
 @media (max-width: 640px) {
   body {
-    font-size: 16px; /* 防止 iOS 缩放表单 */
+    font-size: 17px; /* iOS 原生默认字号 */
   }
 
   .mobile-full-width {
@@ -156,36 +124,13 @@ button, a, input, textarea {
     padding: 0 16px;
   }
 
-  /* 禁用长按保存/复制图片等行为 */
   img {
     -webkit-touch-callout: none;
     user-select: none;
   }
 }
 
-/* ================== 动画定义 ================== */
-@keyframes fade-in {
-  from { opacity: 0; }
-  to { opacity: 1; }
-}
-
-@keyframes shimmer {
-  0% { background-position: -1000px 0; }
-  100% { background-position: 1000px 0; }
-}
-
-.fade-in {
-  animation: fade-in 0.3s ease-out forwards;
-}
-
-.shimmer {
-  background: linear-gradient(90deg, #f0f0f0 25%, #e0e0e0 50%, #f0f0f0 75%);
-  background-size: 2000px 100%;
-  animation: shimmer 1.5s infinite linear;
-}
-
-/* ================== PWA & 安全区域适配 ================== */
-/* 防止PWA在iOS状态栏下方被遮挡 */
+/* ================== PWA 安全区域适配 ================== */
 @supports (padding-top: env(safe-area-inset-top)) {
   body {
     padding-top: env(safe-area-inset-top);
@@ -194,40 +139,53 @@ button, a, input, textarea {
   }
 }
 
-/* ================== 表单与按钮基础样式 ================== */
-input, textarea, button {
-  font-family: inherit;
-  font-size: 16px;
-}
-
+/* ================== 按钮 & 表单 - 原生风格 ================== */
 button {
+  font-family: inherit;
+  font-size: 17px;
+  font-weight: 600;
   border: none;
   background: none;
   cursor: pointer;
+  padding: 12px 20px;
+  border-radius: var(--radius-md);
+  transition: opacity 0.15s ease;
 }
 
 .btn-primary {
   background-color: var(--color-primary);
   color: white;
-  padding: 10px 16px;
-  border-radius: var(--radius-md);
-  font-weight: 600;
 }
 .btn-primary:active {
-  opacity: 0.9;
+  opacity: 0.85;
 }
 
-/* ================== 文件阅读器容器优化 ================== */
+/* 原生表单控件 */
+input, textarea {
+  font-size: 17px;
+  padding: 12px 16px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-bg);
+  color: var(--color-text);
+}
+input:focus, textarea:focus {
+  border-color: var(--color-primary);
+}
+
+/* ================== 阅读器容器 - 类似 Notes 或 Books 应用 ================== */
 .reader-container {
   max-width: 800px;
   margin: 0 auto;
   padding: 16px;
-  height: calc(100vh - 100px);
+  height: calc(100vh - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px) - 60px);
   overflow-y: auto;
-  -webkit-overflow-scrolling: touch; /* iOS 惯性滚动 */
+  -webkit-overflow-scrolling: touch;
+  background: var(--color-bg);
 }
 
-.pdf-viewer {
+.pdf-viewer,
+.txt-content {
   width: 100%;
   min-height: 100%;
 }
@@ -235,7 +193,9 @@ button {
 .txt-content {
   white-space: pre-wrap;
   word-break: break-word;
-  font-family: ui-monospace, monospace;
+  font-family: ui-monospace, 'SF Mono', 'Monaco', monospace;
   font-size: 16px;
-  line-height: 1.8;
+  line-height: 1.6;
+  color: var(--color-text);
+  padding: 8px 0;
 }
