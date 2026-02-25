@@ -433,7 +433,7 @@ function App() {
       </header>
 
       {/* Main Content */}
-      <main className="flex-1 container px-4 py-4 pb-24">
+      <main className="flex-1 mx-auto max-w-screen px-4 py-4 pb-24">
         <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
           {/* Schedule Tab */}
           <TabsContent value="schedule" className="mt-0 animate-in fade-in slide-in-from-bottom-4 duration-300">
@@ -507,28 +507,37 @@ function App() {
                 onUploadCover={handleUploadCover}
               />
             ) : (
-              <div className="space-y-4">
+              <div className="flex flex-col items-center gap-3 w-full max-w-2xl mx-auto">
                 <SearchBar
                   value={filter.searchQuery || ''}
                   onChange={handleSearch}
                   placeholder="搜索书名、作者、标签..."
                 />
-                <BookList
-                  books={filteredBooks}
-                  categories={categories}
-                  filter={filter}
-                  onFilterChange={handleFilterChange}
-                  onBookClick={handleBookClick}
-                  allTags={allTags}
-                  onEditBook={(book) => {
-                    // Open edit dialog
-                    setSelectedBookId(book.id);
-                  }}
-                  onDeleteBook={(bookId) => {
-                    deleteBook(bookId);
-                    toast.success('书籍已删除');
-                  }}
-                />
+                {filteredBooks.length === 0 ? (
+                  <div className="text-center py-16 space-y-4">
+                    <Library className="mx-auto h-12 w-12 text-muted-foreground" />
+                    <p className="text-lg text-muted-foreground">还没有书籍</p>
+                    <p className="text-sm text-muted-foreground max-w-md mx-auto">
+                      点击右下角的 <Upload className="inline h-4 w-4 mx-1" /> 按钮，添加你的第一本书籍。
+                    </p>
+                  </div>
+                ) : (
+                  <BookList
+                    books={filteredBooks}
+                    categories={categories}
+                    filter={filter}
+                    onFilterChange={handleFilterChange}
+                    onBookClick={handleBookClick}
+                    allTags={allTags}
+                    onEditBook={(book) => {
+                      setSelectedBookId(book.id);
+                    }}
+                    onDeleteBook={(bookId) => {
+                      deleteBook(bookId);
+                      toast.success('书籍已删除');
+                    }}
+                  />
+                )}
               </div>
             )}
           </TabsContent>
