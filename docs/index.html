@@ -12,18 +12,13 @@
     <!-- PWA Manifest -->
     <link rel="manifest" href="./manifest.json" />
     
-    <!-- Icons -->
-    <link rel="icon" type="image/png" sizes="192x192" href="./icon-192x192.png" />
-    <link rel="apple-touch-icon" sizes="192x192" href="./icon-192x192.png" />
-    <link rel="mask-icon" href="./icon-192x192.png" color="#3b82f6" />
-    
     <title>我的知识库</title>
     
     <!-- Service Worker Registration -->
     <script>
       if ('serviceWorker' in navigator) {
         window.addEventListener('load', () => {
-          navigator.serviceWorker.register('./docs/sw.js')
+          navigator.serviceWorker.register('./sw.js')
             .then((registration) => {
               console.log('SW registered:', registration);
             })
@@ -33,7 +28,7 @@
         });
       }
     </script>
-  </head>
+  <link rel="manifest" href="./manifest.webmanifest"><script id="vite-plugin-pwa:register-sw" src="./registerSW.js"></script></head>
   <body>
     <div id="root"></div>
     
