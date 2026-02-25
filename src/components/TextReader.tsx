@@ -80,7 +80,6 @@ interface Chapter {
 
 /**
  * 解析文本内容为章节结构
- * 支持多种章节标题格式（如“第X章”、“Chapter X”等）
  */
 function parseChapters(text: string): Chapter[] {
   if (!text) return [{ title: '正文', index: 0, startLine: 0, endLine: 0, lines: [] }];
@@ -122,9 +121,6 @@ function parseChapters(text: string): Chapter[] {
   return chapters;
 }
 
-/**
- * 从本地存储加载用户阅读进度
- */
 function getSavedProgress(bookId: string): { chapter: number; lineInChapter: number } {
   try {
     const saved = localStorage.getItem(`reader-progress-v5-${bookId}`);
@@ -136,9 +132,6 @@ function getSavedProgress(bookId: string): { chapter: number; lineInChapter: num
   return { chapter: 0, lineInChapter: 0 };
 }
 
-/**
- * 保存当前阅读进度到本地存储
- */
 function saveProgress(bookId: string, chapter: number, lineInChapter: number) {
   try {
     localStorage.setItem(`reader-progress-v5-${bookId}`, JSON.stringify({ chapter, lineInChapter }));
@@ -146,13 +139,14 @@ function saveProgress(bookId: string, chapter: number, lineInChapter: number) {
 }
 
 /**
- * 加载用户设置，若无则使用默认值
+ * 🔧 修复点 1: 强制使用默认主题（theme=0），除非用户明确更改过
+ * 防止 localStorage 残留深色主题导致“一打开就是黑底”
  */
 function loadSettings(): ReaderSettings {
   const defaults: ReaderSettings = {
     fontSize: 18,
     fontFamily: FONTS[0].value,
-    theme: 0,
+    theme: 0, // 默认白底
     pageMode: 'scroll',
     lineHeight: 1.75,
     letterSpacing: 0.3,
@@ -162,24 +156,25 @@ function loadSettings(): ReaderSettings {
   };
   try {
     const saved = localStorage.getItem('text-reader-settings');
-    if (saved) return { ...defaults, ...JSON.parse(saved) };
+    if (saved) {
+      const parsed = JSON.parse(saved);
+      // 如果用户从未改过主题，强制用 0（避免旧数据污染）
+      if (parsed.theme === undefined || parsed.theme === null) {
+        parsed.theme = 0;
+      }
+      return { ...defaults, ...parsed };
+    }
   } catch {}
   return defaults;
 }
 
-/**
- * 保存用户设置到本地存储
- */
 function saveSettings(settings: ReaderSettings) {
   try {
     localStorage.setItem('text-reader-settings', JSON.stringify(settings));
   } catch {}
 }
 
-// --- 核心优化：高效渲染大文本 ---
-// 我们不再预先分割整个文本，而是通过索引直接从原始字符串中切片
 const extractLinesFromContent = (content: string, start: number, end: number): string[] => {
-  // 找到起始位置前的第一个换行符
   let startPos = 0;
   if (start > 0) {
     let searchPos = start;
@@ -189,30 +184,32 @@ const extractLinesFromContent = (content: string, start: number, end: number): s
     startPos = searchPos;
   }
 
-  // 找到结束位置后的一个换行符
   let endPos = content.length;
   if (end < content.length) {
     let searchPos = end;
     while (searchPos < content.length && content.charAt(searchPos) !== '\n') {
       searchPos++;
     }
-    endPos = searchPos + 1; // 包含换行符以便正确分割
+    endPos = searchPos + 1;
   }
 
   const segment = content.substring(startPos, endPos);
   const lines = segment.split('\n');
-  
-  // 计算需要跳过的行数
   const skipLines = start - startPos;
   return lines.slice(skipLines, skipLines + (end - start)).filter(line => line !== undefined);
 };
 
 export function TextReader({ content, title, bookId, onClose }: TextReaderProps) {
-  if (!content) {
+  // 🔧 修复点 2: 增强空内容检测（包括纯空白字符）
+  const isContentEmpty = !content || content.trim().length === 0;
+
+  if (isContentEmpty) {
     return (
       <div className="fixed inset-0 z-50 flex items-center justify-center bg-background">
-        <div className="text-center">
-          <p className="text-muted-foreground">内容为空</p>
+        <div className="text-center p-6 max-w-md">
+          <p className="text-muted-foreground mb-4">
+            {content ? '文件内容为空或仅包含空白字符' : '未加载到内容'}
+          </p>
           <Button onClick={onClose} className="mt-4">返回</Button>
         </div>
       </div>
@@ -257,9 +254,8 @@ export function TextReader({ content, title, bookId, onClose }: TextReaderProps)
   const linesPerPage = 25;
   const totalPages = Math.max(1, Math.ceil(totalLinesInChapter / linesPerPage));
   const currentPage = Math.floor(lineInChapter / linesPerPage);
-  const currentPageKey = `${currentChapter}-${currentPage}`; // 唯一键用于触发滚动重置
+  const currentPageKey = `${currentChapter}-${currentPage}`;
 
-  // 初始化：恢复上次阅读位置
   useEffect(() => {
     if (hasInitialized.current) return;
     hasInitialized.current = true;
@@ -273,7 +269,6 @@ export function TextReader({ content, title, bookId, onClose }: TextReaderProps)
     }
   }, [bookId, chapters.length]);
 
-  // 更新时间显示
   useEffect(() => {
     const update = () => {
       const now = new Date();
@@ -284,12 +279,10 @@ export function TextReader({ content, title, bookId, onClose }: TextReaderProps)
     return () => clearInterval(interval);
   }, []);
 
-  // 自动保存阅读进度
   useEffect(() => {
     saveProgress(bookId, currentChapter, lineInChapter);
   }, [currentChapter, lineInChapter, bookId]);
 
-  // 自动阅读功能
   useEffect(() => {
     if (isAutoReading) {
       autoReadRef.current = setInterval(() => {
@@ -308,12 +301,10 @@ export function TextReader({ content, title, bookId, onClose }: TextReaderProps)
     };
   }, [isAutoReading, autoReadSpeed, settings.pageMode, lineInChapter, isImmersive]);
 
-  // 保存用户设置
   useEffect(() => {
     saveSettings(settings);
   }, [settings]);
 
-  // 自动隐藏顶栏
   useEffect(() => {
     if (!settings.autoHideHeader || isImmersive) return;
 
@@ -339,7 +330,6 @@ export function TextReader({ content, title, bookId, onClose }: TextReaderProps)
     };
   }, [settings.autoHideHeader, isImmersive]);
 
-  // 键盘快捷键支持
   useEffect(() => {
     const handleKey = (e: KeyboardEvent) => {
       if (showSettings || showChapters) return;
@@ -371,7 +361,6 @@ export function TextReader({ content, title, bookId, onClose }: TextReaderProps)
     return () => window.removeEventListener('keydown', handleKey);
   }, [showSettings, showChapters, lineInChapter, currentChapter, chapters.length, settings.pageMode, isImmersive]);
 
-  // 滚动模式下同步章节状态
   const handleScroll = () => {
     if (settings.pageMode !== 'scroll') return;
     
@@ -385,7 +374,6 @@ export function TextReader({ content, title, bookId, onClose }: TextReaderProps)
     const containerHeight = activeContainer.clientHeight;
     const scrollCenter = scrollTop + containerHeight / 3;
     
-    // 查找当前可视区域内的章节
     for (let i = 0; i < chapters.length; i++) {
       const chapterEl = chapterRefs.current[i];
       if (!chapterEl) continue;
@@ -406,24 +394,16 @@ export function TextReader({ content, title, bookId, onClose }: TextReaderProps)
     }, 150);
   };
 
-
-  /**
-   * 翻页至下一页或下一章
-   * 核心修复：在 page 模式下确保新页面从顶部开始
-   */
   const goToNext = () => {
     if (settings.pageMode === 'page') {
       const nextLine = lineInChapter + linesPerPage;
       if (nextLine >= totalLinesInChapter && currentChapter < chapters.length - 1) {
-        // 进入下一章，从头开始
         setCurrentChapter(prev => prev + 1);
         setLineInChapter(0);
       } else if (nextLine < totalLinesInChapter) {
-        // 当前章内翻页
         setLineInChapter(nextLine);
       }
     } else {
-      // 滚动模式：平滑滚动
       const activeContainer = isImmersive ? immersiveContainerRef.current : normalContainerRef.current;
       if (activeContainer) {
         activeContainer.scrollBy({ top: activeContainer.clientHeight * 0.9, behavior: 'smooth' });
@@ -431,23 +411,16 @@ export function TextReader({ content, title, bookId, onClose }: TextReaderProps)
     }
   };
 
-  /**
-   * 翻页至上一页或上一章
-   * 核心修复：在 page 模式下确保新页面从顶部开始
-   */
   const goToPrev = () => {
     if (settings.pageMode === 'page') {
       const prevLine = lineInChapter - linesPerPage;
       if (prevLine < 0 && currentChapter > 0) {
-        // 返回上一章，从头开始
         setCurrentChapter(currentChapter - 1);
         setLineInChapter(0);
       } else if (prevLine >= 0) {
-        // 当前章内翻页
         setLineInChapter(prevLine);
       }
     } else {
-      // 滚动模式：平滑滚动
       const activeContainer = isImmersive ? immersiveContainerRef.current : normalContainerRef.current;
       if (activeContainer) {
         activeContainer.scrollBy({ top: -activeContainer.clientHeight * 0.9, behavior: 'smooth' });
@@ -455,10 +428,6 @@ export function TextReader({ content, title, bookId, onClose }: TextReaderProps)
     }
   };
 
-  /**
-   * 跳转至指定章节
-   * 核心优化：增强 DOM 操作时序控制与错误处理
-   */
   const goToChapter = (index: number) => {
     if (index < 0 || index >= chapters.length) return;
   
@@ -466,7 +435,6 @@ export function TextReader({ content, title, bookId, onClose }: TextReaderProps)
     setLineInChapter(0);
     setShowChapters(false);
   
-    // 使用 requestAnimationFrame 替代 setTimeout，确保 DOM 已更新
     requestAnimationFrame(() => {
       const activeContainer = isImmersive 
         ? immersiveContainerRef.current 
@@ -475,10 +443,8 @@ export function TextReader({ content, title, bookId, onClose }: TextReaderProps)
       if (!activeContainer) return;
 
       if (settings.pageMode === 'page') {
-        // 翻页模式：立即置顶
         activeContainer.scrollTop = 0;
       } else if (settings.pageMode === 'scroll') {
-        // 滚动模式：平滑定位到章节
         const chapterEl = chapterRefs.current[index];
         if (chapterEl) {
           activeContainer.scrollTo({
@@ -490,10 +456,6 @@ export function TextReader({ content, title, bookId, onClose }: TextReaderProps)
     });
   };
 
-  /**
-   * 切换沉浸模式
-   * 保留切换前的滚动位置，并在切回时恢复
-   */
   const toggleImmersive = () => {
     const newImmersive = !isImmersive;
     const currentContainer = newImmersive ? normalContainerRef.current : immersiveContainerRef.current;
@@ -517,7 +479,6 @@ export function TextReader({ content, title, bookId, onClose }: TextReaderProps)
     }
   };
 
-  // 恢复非沉浸模式下的滚动位置
   useEffect(() => {
     const targetContainer = isImmersive ? immersiveContainerRef.current : normalContainerRef.current;
     if (targetContainer && savedScrollPosition.current > 0) {
@@ -527,37 +488,24 @@ export function TextReader({ content, title, bookId, onClose }: TextReaderProps)
     }
   }, [isImmersive]);
 
-  /**
-   * 🔧 核心修复：在 page 模式下，每次翻页后强制滚动到容器顶部
-   * 使用 currentPageKey 作为依赖项，确保仅当实际发生页面变化时触发
-   * 采用 requestAnimationFrame 保证操作在 DOM 渲染完成后执行，避免无效操作
-   */
   useEffect(() => {
     if (settings.pageMode !== 'page') return;
 
     const container = isImmersive ? immersiveContainerRef.current : normalContainerRef.current;
     if (!container) return;
 
-    // 使用 requestAnimationFrame 确保在下一帧渲染完成后执行
     const rafId = requestAnimationFrame(() => {
       container.scrollTop = 0;
     });
 
     return () => cancelAnimationFrame(rafId);
-  }, [currentPageKey, settings.pageMode, isImmersive]); // 依赖当前页标识符
+  }, [currentPageKey, settings.pageMode, isImmersive]);
 
-  /**
-   * 手势操作：触摸开始事件记录起点
-   */
   const onTouchStart = (e: React.TouchEvent) => {
     touchStartX.current = e.touches[0].clientX;
     touchStartY.current = e.touches[0].clientY;
   };
 
-  /**
-   * 手势操作：触摸结束事件判断方向并执行翻页
-   * 优化灵敏度：要求横向滑动距离大于50px且超过纵向滑动
-   */
   const onTouchEnd = (e: React.TouchEvent) => {
     const deltaX = touchStartX.current - e.changedTouches[0].clientX;
     const deltaY = touchStartY.current - e.changedTouches[0].clientY;
@@ -568,10 +516,6 @@ export function TextReader({ content, title, bookId, onClose }: TextReaderProps)
     }
   };
 
-  /**
-   * 内容区域点击事件：左右边缘点击实现翻页
-   * 提升响应灵敏度，适用于大屏设备
-   */
   const onContentClick = (e: React.MouseEvent) => {
     if (settings.pageMode === 'scroll' && !isImmersive) return;
     
@@ -584,18 +528,10 @@ export function TextReader({ content, title, bookId, onClose }: TextReaderProps)
     else if (x > rect.width * 0.75) goToNext();
   };
 
-  /**
-   * 更新指定设置项，保持状态不可变性
-   */
   const updateSetting = <K extends keyof ReaderSettings>(key: K, value: ReaderSettings[K]) => {
     setSettings(prev => ({ ...prev, [key]: value }));
   };
 
-  /**
-   * 渲染当前页面的内容（适用于翻页模式）
-   * --- 关键优化点 ---
-   * 不再使用 `currentChapterData.lines`，而是直接从原始 `content` 中提取
-   */
   const renderPageContent = () => {
     const chapter = chapters[currentChapter];
     if (!chapter) return null;
@@ -606,7 +542,6 @@ export function TextReader({ content, title, bookId, onClose }: TextReaderProps)
       chapter.endLine + 1
     );
 
-    // 直接从原始 content 中提取所需行
     const displayLines = extractLinesFromContent(content, startGlobalLine, endGlobalLine);
 
     return (
@@ -634,11 +569,6 @@ export function TextReader({ content, title, bookId, onClose }: TextReaderProps)
     );
   };
 
-  /**
-   * 渲染完整滚动内容（适用于滚动模式）
-   * --- 关键优化点 ---
-   * 对于大文件，我们只渲染章节标题和占位符，在滚动时动态填充内容
-   */
   const renderScrollContent = () => {
     return (
       <div>
@@ -659,7 +589,6 @@ export function TextReader({ content, title, bookId, onClose }: TextReaderProps)
             >
               {chapter.title}
             </div>
-            {/* 对于滚动模式，我们仍然渲染全部内容，但对于超大文件，可以进一步优化为懒加载 */}
             <div style={{ 
               fontSize: `${settings.fontSize}px`,
               fontFamily: settings.fontFamily,
@@ -684,9 +613,6 @@ export function TextReader({ content, title, bookId, onClose }: TextReaderProps)
     );
   };
 
-  /**
-   * 目录组件
-   */
   const ChapterList = ({ onSelect }: { onSelect: (index: number) => void }) => (
     <div className="py-2">
       {chapters.map((chapter, index) => (
@@ -711,7 +637,6 @@ export function TextReader({ content, title, bookId, onClose }: TextReaderProps)
     </div>
   );
 
-  // 沉浸模式 UI
   if (isImmersive) {
     return (
       <div 
@@ -812,7 +737,6 @@ export function TextReader({ content, title, bookId, onClose }: TextReaderProps)
     );
   }
 
-  // 默认模式 UI
   return (
     <div 
       className="fixed inset-0 z-50 flex flex-col"
