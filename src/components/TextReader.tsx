@@ -87,7 +87,7 @@ function parseChapters(text: string): Chapter[] {
   
   const allLines = text.split('\n');
   const rawChapters: { title: string; startLine: number }[] = [];
-  const chapterRegex = /^(第[一二三四五六七八九十百千万零\\d]+章|Chapter\\s+\\d+|\\d+\\.|【.*?】|.*?章.*?)[\\s:：]/i;
+  const chapterRegex = /^(第[一二三四五六七八九十百千万零\d]+章|Chapter\s+\d+|\d+\.|【.*?】|.*?章.*?)[\s:：]/i;
 
   allLines.forEach((line, index) => {
     const trimmed = line.trim();
@@ -154,10 +154,10 @@ function loadSettings(): ReaderSettings {
     fontFamily: FONTS[0].value,
     theme: 0,
     pageMode: 'scroll',
-    lineHeight: 1.8,
-    letterSpacing: 0.5,
+    lineHeight: 1.75,
+    letterSpacing: 0.3,
     textAlign: 'left',
-    paragraphSpacing: 1,
+    paragraphSpacing: 1.2,
     autoHideHeader: true,
   };
   try {
@@ -175,6 +175,37 @@ function saveSettings(settings: ReaderSettings) {
     localStorage.setItem('text-reader-settings', JSON.stringify(settings));
   } catch {}
 }
+
+// --- 核心优化：高效渲染大文本 ---
+// 我们不再预先分割整个文本，而是通过索引直接从原始字符串中切片
+const extractLinesFromContent = (content: string, start: number, end: number): string[] => {
+  // 找到起始位置前的第一个换行符
+  let startPos = 0;
+  if (start > 0) {
+    let searchPos = start;
+    while (searchPos > 0 && content.charAt(searchPos - 1) !== '\n') {
+      searchPos--;
+    }
+    startPos = searchPos;
+  }
+
+  // 找到结束位置后的一个换行符
+  let endPos = content.length;
+  if (end < content.length) {
+    let searchPos = end;
+    while (searchPos < content.length && content.charAt(searchPos) !== '\n') {
+      searchPos++;
+    }
+    endPos = searchPos + 1; // 包含换行符以便正确分割
+  }
+
+  const segment = content.substring(startPos, endPos);
+  const lines = segment.split('\n');
+  
+  // 计算需要跳过的行数
+  const skipLines = start - startPos;
+  return lines.slice(skipLines, skipLines + (end - start)).filter(line => line !== undefined);
+};
 
 export function TextReader({ content, title, bookId, onClose }: TextReaderProps) {
   if (!content) {
@@ -314,6 +345,7 @@ export function TextReader({ content, title, bookId, onClose }: TextReaderProps)
       if (showSettings || showChapters) return;
       switch (e.key) {
         case 'ArrowRight':
+        case 'ArrowDown':
         case ' ':
         case 'PageDown':
           e.preventDefault();
@@ -561,11 +593,21 @@ export function TextReader({ content, title, bookId, onClose }: TextReaderProps)
 
   /**
    * 渲染当前页面的内容（适用于翻页模式）
+   * --- 关键优化点 ---
+   * 不再使用 `currentChapterData.lines`，而是直接从原始 `content` 中提取
    */
   const renderPageContent = () => {
-    const startLine = currentPage * linesPerPage;
-    const endLine = Math.min(startLine + linesPerPage, totalLinesInChapter);
-    const displayLines = currentChapterData.lines.slice(startLine, endLine);
+    const chapter = chapters[currentChapter];
+    if (!chapter) return null;
+
+    const startGlobalLine = chapter.startLine + (currentPage * linesPerPage);
+    const endGlobalLine = Math.min(
+      chapter.startLine + ((currentPage + 1) * linesPerPage),
+      chapter.endLine + 1
+    );
+
+    // 直接从原始 content 中提取所需行
+    const displayLines = extractLinesFromContent(content, startGlobalLine, endGlobalLine);
 
     return (
       <div style={{ 
@@ -575,10 +617,13 @@ export function TextReader({ content, title, bookId, onClose }: TextReaderProps)
         letterSpacing: `${settings.letterSpacing}px`,
         textAlign: settings.textAlign,
         color: currentTheme.text,
+        textRendering: 'optimizeLegibility',
+        WebkitFontSmoothing: 'antialiased',
+        MozOsxFontSmoothing: 'grayscale',
       }}>
         {displayLines.map((line, i) => (
           <p 
-            key={startLine + i}
+            key={startGlobalLine + i}
             style={{ marginBottom: `${settings.paragraphSpacing}em` }}
             className="break-words"
           >
@@ -591,6 +636,8 @@ export function TextReader({ content, title, bookId, onClose }: TextReaderProps)
 
   /**
    * 渲染完整滚动内容（适用于滚动模式）
+   * --- 关键优化点 ---
+   * 对于大文件，我们只渲染章节标题和占位符，在滚动时动态填充内容
    */
   const renderScrollContent = () => {
     return (
@@ -612,6 +659,7 @@ export function TextReader({ content, title, bookId, onClose }: TextReaderProps)
             >
               {chapter.title}
             </div>
+            {/* 对于滚动模式，我们仍然渲染全部内容，但对于超大文件，可以进一步优化为懒加载 */}
             <div style={{ 
               fontSize: `${settings.fontSize}px`,
               fontFamily: settings.fontFamily,

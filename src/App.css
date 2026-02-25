@@ -1,330 +1,241 @@
-/* App specific styles */
+/* App.css - 全局样式主文件 (合并自 global.css 与原 App.css) */
 
-/* Safe area padding for mobile */
-.safe-area-pb {
-  padding-bottom: env(safe-area-inset-bottom, 0);
+/* ================== 基础重置与变量定义 ================== */
+:root {
+  --color-primary: #3b82f6;
+  --color-bg: #ffffff;
+  --color-bg-secondary: #f9fafb;
+  --color-text: #111827;
+  --color-text-secondary: #6b7280;
+  --color-border: #e5e7eb;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
+  --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -2px rgba(0, 0, 0, 0.1);
+  --transition-fast: all 0.15s ease;
+  --transition-normal: all 0.3s cubic-bezier(0.25, 0.8, 0.25, 1);
 }
 
-/* Line clamp utilities */
-.line-clamp-2 {
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
+@media (prefers-color-scheme: dark) {
+  :root {
+    --color-bg: #111827;
+    --color-bg-secondary: #1f2937;
+    --color-text: #f9fafb;
+    --color-text-secondary: #d1d5db;
+    --color-border: #374151;
+  }
 }
 
-.line-clamp-3 {
-  display: -webkit-box;
-  -webkit-line-clamp: 3;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
 }
 
-/* Custom scrollbar */
-::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
+html, body, #root {
+  height: 100%;
+  overscroll-behavior-y: none; /* 阻止下拉刷新干扰 */
 }
 
-::-webkit-scrollbar-track {
-  background: transparent;
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  background-color: var(--color-bg);
+  color: var(--color-text);
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  touch-action: manipulation; /* 提升移动端点击响应速度 */
 }
 
-::-webkit-scrollbar-thumb {
-  background: hsl(var(--muted-foreground) / 0.3);
-  border-radius: 3px;
-}
-
-::-webkit-scrollbar-thumb:hover {
-  background: hsl(var(--muted-foreground) / 0.5);
-}
-
-/* Smooth transitions */
+/* ================== 全局过渡与交互优化 ================== */
 * {
-  transition-property: color, background-color, border-color, text-decoration-color, fill, stroke, opacity, box-shadow, transform, filter, backdrop-filter;
+  transition-property: background-color, border-color, color, fill, stroke, opacity, box-shadow, transform;
   transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
   transition-duration: 150ms;
 }
 
-/* Focus styles */
-button:focus-visible,
-input:focus-visible,
-textarea:focus-visible,
-select:focus-visible {
-  outline: 2px solid hsl(var(--ring));
-  outline-offset: 2px;
+button, a, input, textarea {
+  outline: none;
+  -webkit-tap-highlight-color: transparent;
 }
 
-/* Touch action for mobile */
-button,
-a {
-  touch-action: manipulation;
+/* ================== 工具类 (Utility Classes) ================== */
+.safe-area-pb {
+  padding-bottom: env(safe-area-inset-bottom, 16px);
 }
 
-/* Prevent text selection on UI elements */
+.line-clamp-2 {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
 .no-select {
   user-select: none;
   -webkit-user-select: none;
 }
 
-/* Card hover effect */
 .card-hover {
-  transition: transform 0.2s ease, box-shadow 0.2s ease;
+  cursor: pointer;
 }
-
 .card-hover:hover {
   transform: translateY(-2px);
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+  box-shadow: var(--shadow-md);
 }
 
-/* Progress bar animation */
-@keyframes progress-indeterminate {
-  0% {
-    transform: translateX(-100%);
+.text-primary {
+  color: var(--color-primary);
+}
+
+.bg-secondary {
+  background-color: var(--color-bg-secondary);
+}
+
+.border-default {
+  border: 1px solid var(--color-border);
+}
+
+.radius-md {
+  border-radius: var(--radius-md);
+}
+
+.radius-lg {
+  border-radius: var(--radius-lg);
+}
+
+.shadow-sm {
+  box-shadow: var(--shadow-sm);
+}
+
+.shadow-md {
+  box-shadow: var(--shadow-md);
+}
+
+.transition-fast {
+  transition: var(--transition-fast);
+}
+
+.transition-normal {
+  transition: var(--transition-normal);
+}
+
+/* ================== 滚动条美化 (仅桌面端) ================== */
+@media (hover: hover) and (pointer: fine) {
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
   }
-  100% {
-    transform: translateX(100%);
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: var(--color-border);
+    border-radius: 3px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: var(--color-text-secondary);
   }
 }
 
-.progress-indeterminate::after {
-  content: '';
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  background: linear-gradient(90deg, transparent, hsl(var(--primary) / 0.3), transparent);
-  animation: progress-indeterminate 1.5s infinite;
-}
-
-/* Badge animations */
-@keyframes badge-pop {
-  0% {
-    transform: scale(0.8);
-    opacity: 0;
-  }
-  50% {
-    transform: scale(1.1);
-  }
-  100% {
-    transform: scale(1);
-    opacity: 1;
-  }
-}
-
-.badge-animate {
-  animation: badge-pop 0.3s ease-out;
-}
-
-/* Toast animations */
-@keyframes toast-slide-in {
-  from {
-    transform: translateX(100%);
-    opacity: 0;
-  }
-  to {
-    transform: translateX(0);
-    opacity: 1;
-  }
-}
-
-.toast-enter {
-  animation: toast-slide-in 0.3s ease-out;
-}
-
-/* Dialog backdrop blur */
-.dialog-backdrop {
-  backdrop-filter: blur(4px);
-}
-
-/* Input focus ring */
-input:focus,
-textarea:focus,
-select:focus {
-  ring: 2px;
-  ring-color: hsl(var(--ring));
-  ring-offset: 2px;
-}
-
-/* Mobile optimizations */
+/* ================== 移动端优先媒体查询 ================== */
 @media (max-width: 640px) {
-  .container {
-    padding-left: 1rem;
-    padding-right: 1rem;
+  body {
+    font-size: 16px; /* 防止 iOS 缩放表单 */
   }
-  
-  /* Larger touch targets on mobile */
-  button,
-  [role="button"] {
-    min-height: 44px;
-    min-width: 44px;
+
+  .mobile-full-width {
+    width: 100vw;
+    margin-left: calc(-50vw + 50%);
   }
-}
 
-/* Dark mode support */
-@media (prefers-color-scheme: dark) {
-  /* Additional dark mode styles if needed */
-}
+  .mobile-padded {
+    padding: 0 16px;
+  }
 
-/* Print styles */
-@media print {
-  .no-print {
-    display: none !important;
+  /* 禁用长按保存/复制图片等行为 */
+  img {
+    -webkit-touch-callout: none;
+    user-select: none;
   }
 }
 
-/* Page transition animations */
+/* ================== 动画定义 ================== */
 @keyframes fade-in {
-  from {
-    opacity: 0;
-  }
-  to {
-    opacity: 1;
-  }
+  from { opacity: 0; }
+  to { opacity: 1; }
 }
 
-@keyframes slide-in-from-bottom {
-  from {
-    transform: translateY(20px);
-    opacity: 0;
-  }
-  to {
-    transform: translateY(0);
-    opacity: 1;
-  }
-}
-
-.animate-in {
-  animation-fill-mode: both;
+@keyframes shimmer {
+  0% { background-position: -1000px 0; }
+  100% { background-position: 1000px 0; }
 }
 
 .fade-in {
-  animation-name: fade-in;
-}
-
-.slide-in-from-bottom-4 {
-  animation-name: slide-in-from-bottom;
-}
-
-.duration-300 {
-  animation-duration: 300ms;
-}
-
-/* Card transitions */
-.card-transition {
-  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
-}
-
-.card-transition:hover {
-  transform: translateY(-2px);
-  box-shadow: 0 8px 25px -5px rgba(0, 0, 0, 0.1), 0 4px 10px -5px rgba(0, 0, 0, 0.04);
-}
-
-/* Button press effect */
-.btn-press:active {
-  transform: scale(0.97);
-}
-
-/* Navigation item active state */
-.nav-item-active {
-  position: relative;
-}
-
-.nav-item-active::after {
-  content: '';
-  position: absolute;
-  bottom: 0;
-  left: 50%;
-  transform: translateX(-50%);
-  width: 20px;
-  height: 3px;
-  background-color: hsl(var(--primary));
-  border-radius: 3px 3px 0 0;
-}
-
-/* Pull to refresh indicator */
-@keyframes pull-refresh-spin {
-  from {
-    transform: rotate(0deg);
-  }
-  to {
-    transform: rotate(360deg);
-  }
-}
-
-.pull-refresh-spin {
-  animation: pull-refresh-spin 1s linear infinite;
-}
-
-/* Smooth page transitions */
-.page-transition-enter {
-  opacity: 0;
-  transform: translateY(10px);
-}
-
-.page-transition-enter-active {
-  opacity: 1;
-  transform: translateY(0);
-  transition: opacity 300ms, transform 300ms;
-}
-
-.page-transition-exit {
-  opacity: 1;
-}
-
-.page-transition-exit-active {
-  opacity: 0;
-  transition: opacity 300ms;
-}
-
-/* Better touch feedback */
-.touch-feedback {
-  transition: transform 0.1s ease, background-color 0.1s ease;
-}
-
-.touch-feedback:active {
-  transform: scale(0.98);
-  background-color: hsl(var(--muted) / 0.5);
-}
-
-/* Card press effect */
-.card-press:active {
-  transform: scale(0.99);
-}
-
-/* Loading shimmer */
-@keyframes shimmer {
-  0% {
-    background-position: -200% 0;
-  }
-  100% {
-    background-position: 200% 0;
-  }
+  animation: fade-in 0.3s ease-out forwards;
 }
 
 .shimmer {
-  background: linear-gradient(
-    90deg,
-    hsl(var(--muted)) 25%,
-    hsl(var(--muted-foreground) / 0.1) 50%,
-    hsl(var(--muted)) 75%
-  );
-  background-size: 200% 100%;
-  animation: shimmer 1.5s infinite;
+  background: linear-gradient(90deg, #f0f0f0 25%, #e0e0e0 50%, #f0f0f0 75%);
+  background-size: 2000px 100%;
+  animation: shimmer 1.5s infinite linear;
 }
 
-/* Better focus states for accessibility */
-.focus-ring:focus {
-  outline: none;
-  box-shadow: 0 0 0 2px hsl(var(--background)), 0 0 0 4px hsl(var(--primary));
+/* ================== PWA & 安全区域适配 ================== */
+/* 防止PWA在iOS状态栏下方被遮挡 */
+@supports (padding-top: env(safe-area-inset-top)) {
+  body {
+    padding-top: env(safe-area-inset-top);
+    padding-left: env(safe-area-inset-left);
+    padding-right: env(safe-area-inset-right);
+  }
 }
 
-/* Prevent overscroll bounce on iOS */
-html {
-  overscroll-behavior: none;
+/* ================== 表单与按钮基础样式 ================== */
+input, textarea, button {
+  font-family: inherit;
+  font-size: 16px;
 }
 
-body {
-  overscroll-behavior: none;
+button {
+  border: none;
+  background: none;
+  cursor: pointer;
+}
+
+.btn-primary {
+  background-color: var(--color-primary);
+  color: white;
+  padding: 10px 16px;
+  border-radius: var(--radius-md);
+  font-weight: 600;
+}
+.btn-primary:active {
+  opacity: 0.9;
+}
+
+/* ================== 文件阅读器容器优化 ================== */
+.reader-container {
+  max-width: 800px;
+  margin: 0 auto;
+  padding: 16px;
+  height: calc(100vh - 100px);
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch; /* iOS 惯性滚动 */
+}
+
+.pdf-viewer {
+  width: 100%;
+  min-height: 100%;
+}
+
+.txt-content {
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: ui-monospace, monospace;
+  font-size: 16px;
+  line-height: 1.8;
 }
