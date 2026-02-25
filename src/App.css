@@ -1,30 +1,31 @@
-/* ================== 基础重置与变量定义 ================== */
+/* ================== 1. 颜色变量（HSL + 你的配色） ================== */
 :root {
-  /* 浅色模式 - 接近 iOS 系统风格 */
-  --color-primary: #007aff;
-  --color-bg: #ffffff;
-  --color-bg-secondary: #f5f5f7;
-  --color-text: #1d1d1f;
-  --color-text-secondary: #86868b;
-  --color-border: #c6c6c8;
+  --primary: 213 100% 50%;
+  --primary-foreground: 60 9.1% 97.8%;
+  --background: 0 0% 100%;
+  --secondary: 220 13% 96%;
+  --muted: 220 13% 96%;
+  --foreground: 222 8.9% 11.4%;
+  --muted-foreground: 210 13% 53%;
+  --border: 210 13% 78%;
+  --ring: 213 100% 50%;
   --radius-md: 12px;
   --radius-lg: 16px;
-  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.05);
-  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.08);
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
-    /* 深色模式 - 匹配 iOS Dark Mode */
-    --color-bg: #000000;
-    --color-bg-secondary: #1c1c1e;
-    --color-text: #f5f5f7;
-    --color-text-secondary: #aeaeb2;
-    --color-border: #3a3a3c;
+    --background: 0 0% 0%;
+    --secondary: 220 10% 11%;
+    --muted: 220 10% 11%;
+    --foreground: 210 10% 96%;
+    --muted-foreground: 210 10% 68%;
+    --border: 210 13% 23%;
+    --ring: 213 100% 65%;
   }
 }
 
-/* ================== 全局重置 ================== */
+/* ================== 2. 全局重置 ================== */
 *,
 *::before,
 *::after {
@@ -35,43 +36,73 @@
 
 html, body, #root {
   height: 100%;
-  overscroll-behavior-y: none;
 }
 
 body {
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
-  background-color: var(--color-bg);
-  color: var(--color-text);
+  background-color: hsl(var(--background));
+  color: hsl(var(--foreground));
   line-height: 1.5;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   touch-action: manipulation;
-  font-size: 17px; /* iOS 默认正文大小 */
-  /* 隐藏滚动条（原生感） */
-  -ms-overflow-style: none;  /* IE/Edge */
-  scrollbar-width: none;     /* Firefox */
+  font-size: 17px; /* iOS 原生大小 */
+  /* 隐藏滚动条（可选，原生 App 通常隐藏） */
+  -ms-overflow-style: none;
+  scrollbar-width: none;
 }
 body::-webkit-scrollbar {
-  display: none; /* Chrome/Safari */
+  display: none;
 }
 
-/* ================== 全局交互优化 ================== */
-button, a, input, textarea {
-  outline: none;
-  -webkit-tap-highlight-color: transparent;
-  font-family: inherit;
-  font-size: 17px;
+/* ================== 3. 安全区域适配 ================== */
+@supports (padding-top: env(safe-area-inset-top)) {
+  body {
+    padding-top: env(safe-area-inset-top);
+    padding-left: env(safe-area-inset-left);
+    padding-right: env(safe-area-inset-right);
+  }
 }
 
-/* ================== 工具类 ================== */
 .safe-area-pb {
-  padding-bottom: env(safe-area-inset-bottom, 16px);
+  padding-bottom: env(safe-area-inset-bottom, 0);
 }
 
+/* ================== 4. 阅读器专用样式（你的核心需求） ================== */
+.reader-container {
+  max-width: 800px;
+  margin: 0 auto;
+  padding: 16px;
+  height: calc(100vh - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px) - 40px);
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  background: hsl(var(--background));
+  color: hsl(var(--foreground));
+}
+
+.pdf-viewer {
+  width: 100%;
+  min-height: 100%;
+  background: hsl(var(--background));
+  color: hsl(var(--foreground));
+}
+
+.txt-content {
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: ui-monospace, 'SF Mono', 'Monaco', monospace;
+  font-size: 16px;
+  line-height: 1.7;
+  color: hsl(var(--foreground));
+  background: hsl(var(--background));
+  padding: 12px 0;
+  margin: 0;
+}
+
+/* ================== 5. 工具类（兼容你的命名） ================== */
 .line-clamp-2 {
   display: -webkit-box;
   -webkit-line-clamp: 2;
-  line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
 }
@@ -81,24 +112,16 @@ button, a, input, textarea {
   -webkit-user-select: none;
 }
 
-.card-hover {
-  cursor: pointer;
-  transition: transform 0.15s ease;
-}
-.card-hover:active {
-  transform: scale(0.985);
-}
-
 .text-primary {
-  color: var(--color-primary) !important;
+  color: hsl(var(--primary)) !important;
 }
 
 .bg-secondary {
-  background-color: var(--color-bg-secondary) !important;
+  background-color: hsl(var(--secondary)) !important;
 }
 
 .border-default {
-  border: 1px solid var(--color-border) !important;
+  border: 1px solid hsl(var(--border)) !important;
 }
 
 .radius-md {
@@ -109,100 +132,7 @@ button, a, input, textarea {
   border-radius: var(--radius-lg) !important;
 }
 
-.shadow-sm {
-  box-shadow: var(--shadow-sm) !important;
-}
-
-/* ================== 安全区域适配（PWA/iOS） ================== */
-@supports (padding-top: env(safe-area-inset-top)) {
-  body {
-    padding-top: env(safe-area-inset-top);
-    padding-left: env(safe-area-inset-left);
-    padding-right: env(safe-area-inset-right);
-  }
-}
-
-/* ================== 按钮 & 表单 ================== */
-button {
-  cursor: pointer;
-  border: none;
-  background: none;
-  padding: 12px 20px;
-  border-radius: var(--radius-md);
-  font-weight: 600;
-  transition: opacity 0.15s ease;
-}
-
-.btn-primary {
-  background-color: var(--color-primary);
-  color: white;
-}
-.btn-primary:active {
-  opacity: 0.85;
-}
-
-input, textarea {
-  width: 100%;
-  padding: 12px 16px;
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-md);
-  background: var(--color-bg);
-  color: var(--color-text);
-  font-size: 17px;
-}
-input:focus, textarea:focus {
-  border-color: var(--color-primary);
-  box-shadow: 0 0 0 2px rgba(0, 122, 255, 0.2);
-}
-
-/* ================== 阅读器容器（核心修复） ================== */
-.reader-container {
-  max-width: 800px;
-  margin: 0 auto;
-  padding: 16px;
-  height: calc(100vh - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px) - 40px);
-  overflow-y: auto;
-  -webkit-overflow-scrolling: touch;
-  background: var(--color-bg);
-  color: var(--color-text);
-}
-
-.pdf-viewer {
-  width: 100%;
-  min-height: 100%;
-  background: var(--color-bg);
-  color: var(--color-text);
-}
-
-.txt-content {
-  white-space: pre-wrap;
-  word-break: break-word;
-  font-family: ui-monospace, 'SF Mono', 'Monaco', monospace;
-  font-size: 16px;
-  line-height: 1.7;
-  color: var(--color-text); /* 关键：确保文字可读 */
-  background: var(--color-bg); /* 防止背景被覆盖 */
-  padding: 12px 0;
-  margin: 0;
-}
-
-/* ================== 通用内容容器 ================== */
-.content-wrapper {
-  padding: 16px;
-  background: var(--color-bg);
-  color: var(--color-text);
-}
-
-/* ================== 动画（轻量） ================== */
-.fade-in {
-  animation: fade-in 0.2s ease-out forwards;
-}
-@keyframes fade-in {
-  from { opacity: 0; }
-  to { opacity: 1; }
-}
-
-/* ================== 移动端优化 ================== */
+/* ================== 6. 移动端优化 ================== */
 @media (max-width: 640px) {
   .mobile-full-width {
     width: 100vw;
