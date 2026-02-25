@@ -404,17 +404,28 @@ export function TextReader({ content, title, bookId, onClose }: TextReaderProps)
 
   const goToChapter = (index: number) => {
     if (index < 0 || index >= chapters.length) return;
-    
+  
     setCurrentChapter(index);
     setLineInChapter(0);
     setShowChapters(false);
-    
+  
     const activeContainer = isImmersive ? immersiveContainerRef.current : normalContainerRef.current;
-    if (settings.pageMode === 'scroll' && chapterRefs.current[index] && activeContainer) {
-      activeContainer.scrollTo({ 
-        top: chapterRefs.current[index]!.offsetTop, 
-        behavior: 'smooth' 
+    if (!activeContainer) return;
+
+    if (settings.pageMode === 'page') {
+      // 翻页模式：滚动到容器顶部
+      requestAnimationFrame(() => {
+        activeContainer.scrollTop = 0;
       });
+    } else if (settings.pageMode === 'scroll') {
+      // 滚动模式：平滑滚动到章节元素
+      const chapterEl = chapterRefs.current[index];
+      if (chapterEl) {
+        activeContainer.scrollTo({
+          top: chapterEl.offsetTop,
+          behavior: 'smooth'
+        });
+      }
     }
   };
 
