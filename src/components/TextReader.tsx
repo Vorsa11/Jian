@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
+import { useState, useEffect, useRef, useMemo } from 'react';
 import {
   ChevronLeft,
   Settings,
@@ -375,14 +375,6 @@ export function TextReader({ content, title, bookId, onClose }: TextReaderProps)
     }, 150);
   };
 
-  /**
-   * 跳转到指定行，自动处理边界情况
-   */
-  const goToLineInChapter = (line: number) => {
-    const maxLine = Math.max(0, currentChapterData.lines.length - 1);
-    const clampedLine = Math.max(0, Math.min(line, maxLine));
-    setLineInChapter(clampedLine);
-  };
 
   /**
    * 翻页至下一页或下一章
