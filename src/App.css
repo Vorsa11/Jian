@@ -1,22 +1,21 @@
-/* App.css - 全局样式主文件 (优化为原生应用风格) */
-
 /* ================== 基础重置与变量定义 ================== */
 :root {
-  --color-primary: #007aff; /* 更接近 iOS 蓝 */
+  /* 浅色模式 - 接近 iOS 系统风格 */
+  --color-primary: #007aff;
   --color-bg: #ffffff;
-  --color-bg-secondary: #f5f5f7; /* iOS 系统浅灰 */
+  --color-bg-secondary: #f5f5f7;
   --color-text: #1d1d1f;
   --color-text-secondary: #86868b;
   --color-border: #c6c6c8;
-  --radius-md: 12px; /* 原生应用常用大圆角 */
+  --radius-md: 12px;
   --radius-lg: 16px;
-  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.05);
+  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.05);
   --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.08);
-  --transition-fast: all 0.15s ease;
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
+    /* 深色模式 - 匹配 iOS Dark Mode */
     --color-bg: #000000;
     --color-bg-secondary: #1c1c1e;
     --color-text: #f5f5f7;
@@ -25,6 +24,7 @@
   }
 }
 
+/* ================== 全局重置 ================== */
 *,
 *::before,
 *::after {
@@ -46,17 +46,21 @@ body {
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   touch-action: manipulation;
-  /* 移除默认滚动条（原生应用无滚动条） */
-  scrollbar-width: none; /* Firefox */
+  font-size: 17px; /* iOS 默认正文大小 */
+  /* 隐藏滚动条（原生感） */
+  -ms-overflow-style: none;  /* IE/Edge */
+  scrollbar-width: none;     /* Firefox */
 }
 body::-webkit-scrollbar {
   display: none; /* Chrome/Safari */
 }
 
-/* ================== 全局过渡 ================== */
+/* ================== 全局交互优化 ================== */
 button, a, input, textarea {
   outline: none;
   -webkit-tap-highlight-color: transparent;
+  font-family: inherit;
+  font-size: 17px;
 }
 
 /* ================== 工具类 ================== */
@@ -79,42 +83,127 @@ button, a, input, textarea {
 
 .card-hover {
   cursor: pointer;
-  transition: transform 0.2s ease, background-color 0.2s ease;
+  transition: transform 0.15s ease;
 }
 .card-hover:active {
-  transform: scale(0.98); /* 原生点击压感反馈 */
+  transform: scale(0.985);
 }
 
 .text-primary {
-  color: var(--color-primary);
+  color: var(--color-primary) !important;
 }
 
 .bg-secondary {
-  background-color: var(--color-bg-secondary);
+  background-color: var(--color-bg-secondary) !important;
 }
 
 .border-default {
-  border: 1px solid var(--color-border);
+  border: 1px solid var(--color-border) !important;
 }
 
 .radius-md {
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-md) !important;
 }
 
 .radius-lg {
-  border-radius: var(--radius-lg);
+  border-radius: var(--radius-lg) !important;
 }
 
 .shadow-sm {
-  box-shadow: var(--shadow-sm);
+  box-shadow: var(--shadow-sm) !important;
 }
 
-/* ================== 移动端优先 ================== */
-@media (max-width: 640px) {
+/* ================== 安全区域适配（PWA/iOS） ================== */
+@supports (padding-top: env(safe-area-inset-top)) {
   body {
-    font-size: 17px; /* iOS 原生默认字号 */
+    padding-top: env(safe-area-inset-top);
+    padding-left: env(safe-area-inset-left);
+    padding-right: env(safe-area-inset-right);
   }
+}
 
+/* ================== 按钮 & 表单 ================== */
+button {
+  cursor: pointer;
+  border: none;
+  background: none;
+  padding: 12px 20px;
+  border-radius: var(--radius-md);
+  font-weight: 600;
+  transition: opacity 0.15s ease;
+}
+
+.btn-primary {
+  background-color: var(--color-primary);
+  color: white;
+}
+.btn-primary:active {
+  opacity: 0.85;
+}
+
+input, textarea {
+  width: 100%;
+  padding: 12px 16px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-bg);
+  color: var(--color-text);
+  font-size: 17px;
+}
+input:focus, textarea:focus {
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 2px rgba(0, 122, 255, 0.2);
+}
+
+/* ================== 阅读器容器（核心修复） ================== */
+.reader-container {
+  max-width: 800px;
+  margin: 0 auto;
+  padding: 16px;
+  height: calc(100vh - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px) - 40px);
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  background: var(--color-bg);
+  color: var(--color-text);
+}
+
+.pdf-viewer {
+  width: 100%;
+  min-height: 100%;
+  background: var(--color-bg);
+  color: var(--color-text);
+}
+
+.txt-content {
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: ui-monospace, 'SF Mono', 'Monaco', monospace;
+  font-size: 16px;
+  line-height: 1.7;
+  color: var(--color-text); /* 关键：确保文字可读 */
+  background: var(--color-bg); /* 防止背景被覆盖 */
+  padding: 12px 0;
+  margin: 0;
+}
+
+/* ================== 通用内容容器 ================== */
+.content-wrapper {
+  padding: 16px;
+  background: var(--color-bg);
+  color: var(--color-text);
+}
+
+/* ================== 动画（轻量） ================== */
+.fade-in {
+  animation: fade-in 0.2s ease-out forwards;
+}
+@keyframes fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+/* ================== 移动端优化 ================== */
+@media (max-width: 640px) {
   .mobile-full-width {
     width: 100vw;
     margin-left: calc(-50vw + 50%);
@@ -128,74 +217,4 @@ button, a, input, textarea {
     -webkit-touch-callout: none;
     user-select: none;
   }
-}
-
-/* ================== PWA 安全区域适配 ================== */
-@supports (padding-top: env(safe-area-inset-top)) {
-  body {
-    padding-top: env(safe-area-inset-top);
-    padding-left: env(safe-area-inset-left);
-    padding-right: env(safe-area-inset-right);
-  }
-}
-
-/* ================== 按钮 & 表单 - 原生风格 ================== */
-button {
-  font-family: inherit;
-  font-size: 17px;
-  font-weight: 600;
-  border: none;
-  background: none;
-  cursor: pointer;
-  padding: 12px 20px;
-  border-radius: var(--radius-md);
-  transition: opacity 0.15s ease;
-}
-
-.btn-primary {
-  background-color: var(--color-primary);
-  color: white;
-}
-.btn-primary:active {
-  opacity: 0.85;
-}
-
-/* 原生表单控件 */
-input, textarea {
-  font-size: 17px;
-  padding: 12px 16px;
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-md);
-  background: var(--color-bg);
-  color: var(--color-text);
-}
-input:focus, textarea:focus {
-  border-color: var(--color-primary);
-}
-
-/* ================== 阅读器容器 - 类似 Notes 或 Books 应用 ================== */
-.reader-container {
-  max-width: 800px;
-  margin: 0 auto;
-  padding: 16px;
-  height: calc(100vh - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px) - 60px);
-  overflow-y: auto;
-  -webkit-overflow-scrolling: touch;
-  background: var(--color-bg);
-}
-
-.pdf-viewer,
-.txt-content {
-  width: 100%;
-  min-height: 100%;
-}
-
-.txt-content {
-  white-space: pre-wrap;
-  word-break: break-word;
-  font-family: ui-monospace, 'SF Mono', 'Monaco', monospace;
-  font-size: 16px;
-  line-height: 1.6;
-  color: var(--color-text);
-  padding: 8px 0;
 }
