@@ -1,18 +1,11 @@
 import path from "path";
 import react from "@vitejs/plugin-react";
 import { defineConfig } from "vite";
-import { inspectAttr } from 'kimi-plugin-inspect-react';
 import { VitePWA } from 'vite-plugin-pwa';
 
-// 你的 GitHub Pages 站点地址是：
-// https://vorsa11.github.io/Jian/
-// 所以 base 必须是 /Jian/
-const BASE_PATH = '/Jian/';
-
 export default defineConfig({
-  base: BASE_PATH, // ✅ 关键修改：从 './' 改为 '/Jian/'
+  base: '/Jian/',
   plugins: [
-    inspectAttr(),
     react(),
     VitePWA({
       registerType: 'autoUpdate',
@@ -26,8 +19,8 @@ export default defineConfig({
         theme_color: '#3b82f6',
         background_color: '#ffffff',
         display: 'standalone',
-        start_url: BASE_PATH, // ✅ 从 './' 改为 '/Jian/'
-        scope: BASE_PATH,     // ✅ 显式指定作用域（可选但推荐）
+        start_url: '/Jian/',
+        scope: '/Jian/',
         icons: [
           {
             src: 'icon-192x192.png',
@@ -53,6 +46,9 @@ export default defineConfig({
     },
   },
   build: {
-    outDir: 'docs', // ✅ 保持不变
+    outDir: 'docs',
+    rollupOptions: {
+      input: path.resolve(__dirname, 'index.html') // 👈 使用 path.resolve
+    }
   },
 });
