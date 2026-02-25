@@ -264,3 +264,10 @@ body::-webkit-scrollbar {
     user-select: none;
   }
 }
+
+/* 让 FAB 在移动端更舒适 */
+@media (max-width: 480px) {
+  .fixed.bottom-20.right-6 {
+    right: 1.5rem; /* 24px → 更安全 */
+  }
+}

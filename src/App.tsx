@@ -428,12 +428,6 @@ function App() {
               </SheetContent>
             </Sheet>
 
-            {(activeTab === 'library' && !selectedBook) && (
-              <Button size="sm" onClick={() => setIsAddDialogOpen(true)}>
-                <Upload className="h-4 w-4 mr-1" />
-                添加
-              </Button>
-            )}
           </div>
         </div>
       </header>
@@ -558,33 +552,46 @@ function App() {
             <StatsPanel stats={stats} />
           </TabsContent>
         </Tabs>
+
+          {/* Floating Add Button - ONLY in library list view */}
+          {activeTab === 'library' && !selectedBook && (
+            <button
+              onClick={() => setIsAddDialogOpen(true)}
+              className="fixed bottom-20 right-6 z-40 w-12 h-12 rounded-full bg-primary text-primary-foreground shadow-lg hover:shadow-xl hover:bg-primary/90 transition-all duration-200 flex items-center justify-center animate-in fade-in slide-in-from-bottom-2"
+              aria-label="添加书籍"
+            >
+              <Upload className="h-6 w-6" />
+            </button>
+        )}
       </main>
 
-      {/* Bottom Navigation */}
-      <nav className="fixed bottom-0 left-0 right-0 border-t bg-background/95 backdrop-blur safe-area-pb z-50">
-        <div className="flex justify-around h-16 items-center">
-          {navItems.map((item) => {
-            const Icon = item.icon;
-            const isActive = activeTab === item.id;
-            return (
-              <button
-                key={item.id}
-                onClick={() => {
-                  setActiveTab(item.id);
-                  handleBackToList();
-                }}
-                className={`flex flex-col items-center gap-1 px-4 py-2 transition-all duration-200 ${
-                  isActive ? 'text-primary' : 'text-muted-foreground'
-                }`}
-              >
-                <Icon className="h-5 w-5" />
-                <span className="text-[10px]">{item.label}</span>
-                {isActive && <div className="absolute bottom-1 w-4 h-0.5 bg-primary rounded-full" />}
-              </button>
-            );
-          })}
-        </div>
-      </nav>
+          {/* Bottom Navigation */}
+          <nav className="fixed bottom-0 left-0 right-0 max-w-screen mx-auto border-t bg-background/95 backdrop-blur safe-area-pb z-50">
+            <div className="container px-4">
+              <div className="flex justify-around h-16 items-center">
+                {navItems.map((item) => {
+                  const Icon = item.icon;
+                  const isActive = activeTab === item.id;
+                  return (
+                    <button
+                      key={item.id}
+                      onClick={() => {
+                        setActiveTab(item.id);
+                        handleBackToList();
+                      }}
+                      className={`flex flex-col items-center gap-1 px-2 py-2 transition-all duration-200 ${
+                        isActive ? 'text-primary' : 'text-muted-foreground'
+                      }`}
+                    >
+                      <Icon className="h-5 w-5" />
+                      <span className="text-[10px] leading-none">{item.label}</span>
+                      {isActive && <div className="absolute bottom-1 w-4 h-0.5 bg-primary rounded-full" />}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          </nav>
 
       {/* Add Book Dialog */}
       <AddBookDialog
