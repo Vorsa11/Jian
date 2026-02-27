@@ -5,6 +5,7 @@ import React, {
   useMemo,
   useCallback,
 } from 'react';
+import { useVirtualizer } from '@tanstack/react-virtual';
 
 // ============================== 🔧 类型定义 ==============================
 interface Chapter {
@@ -303,12 +304,12 @@ export function TextReader({ content: rawContent, title, bookId, onClose }: Text
 
   if (isContentEmpty) {
     return (
-      <div className="fixed inset-0 z-50 flex items-center justify-center bg-white">
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-background">
         <div className="text-center p-6 max-w-md">
-          <p className="text-gray-500 mb-4">文件内容为空或无法解析</p>
+          <p className="text-muted-foreground mb-4">文件内容为空或无法解析</p>
           <button
             onClick={onClose}
-            className="px-4 py-2 bg-blue-500 text-white rounded-md hover:bg-blue-600 transition-colors"
+            className="px-4 py-2 bg-primary text-primary-foreground rounded-md hover:bg-primary/90 transition-colors"
           >
             返回
           </button>
@@ -543,11 +544,8 @@ export function TextReader({ content: rawContent, title, bookId, onClose }: Text
     if (settings.pageMode === 'page') {
       const nextLine = lineInChapter + 25;
       if (nextLine >= totalLinesInChapter && currentChapter < chapters.length - 1) {
-        setCurrentChapter(prev => {
-          const newChapter = prev + 1;
-          setLineInChapter(0);
-          return newChapter;
-        });
+        setCurrentChapter(prev => prev + 1);
+        setLineInChapter(0);
       } else if (nextLine < totalLinesInChapter) {
         setLineInChapter(nextLine);
       }
@@ -563,13 +561,8 @@ export function TextReader({ content: rawContent, title, bookId, onClose }: Text
     if (settings.pageMode === 'page') {
       const prevLine = lineInChapter - 25;
       if (prevLine < 0 && currentChapter > 0) {
-        setCurrentChapter(prev => {
-          const newChapter = prev - 1;
-          const chapter = chapters[newChapter];
-          const maxLine = Math.max(0, (chapter?.lines.length || 1) - 1);
-          setLineInChapter(maxLine);
-          return newChapter;
-        });
+        setCurrentChapter(currentChapter - 1);
+        setLineInChapter(0);
       } else if (prevLine >= 0) {
         setLineInChapter(prevLine);
       }
@@ -636,9 +629,12 @@ export function TextReader({ content: rawContent, title, bookId, onClose }: Text
       return Array.from({ length: totalLinesAll }, (_, i) => getItemHeight(i));
     }, [totalLinesAll, getItemHeight]);
 
-    // 使用简单的虚拟滚动实现
-    const visibleStart = Math.max(0, lineInChapter - 10);
-    const visibleEnd = Math.min(totalLinesAll, lineInChapter + 30);
+    const virtualizer = useVirtualizer({
+      count: totalLinesAll,
+      getScrollElement: () => parentRef.current,
+      estimateSize: (index) => itemSizes[index] ?? 30,
+      overscan: 10, // 增加overscan以提高流畅度
+    });
 
     return (
       <div
@@ -652,32 +648,29 @@ export function TextReader({ content: rawContent, title, bookId, onClose }: Text
       >
         <div
           style={{
-            height: `${itemSizes.reduce((sum, size) => sum + size, 0)}px`,
+            height: `${virtualizer.getTotalSize()}px`,
             width: '100%',
             position: 'relative',
           }}
         >
-          {Array.from({ length: visibleEnd - visibleStart }, (_, i) => {
-            const index = visibleStart + i;
-            const offset = itemSizes.slice(0, index).reduce((sum, size) => sum + size, 0);
-            
-            return (
-              <div
-                key={index}
-                style={{
-                  position: 'absolute',
-                  top: 0,
-                  left: 0,
-                  width: '100%',
-                  height: `${itemSizes[index] || 30}px`,
-                  transform: `translateY(${offset}px)`,
-                  boxSizing: 'border-box',
-                }}
-              >
-                {renderRow(index)}
-              </div>
-            );
-          })}
+          {virtualizer.getVirtualItems().map((virtualItem) => (
+            <div
+              key={virtualItem.key}
+              data-index={virtualItem.index}
+              ref={(node) => virtualizer.measureElement(node)}
+              style={{
+                position: 'absolute',
+                top: 0,
+                left: 0,
+                width: '100%',
+                height: `${virtualItem.size}px`,
+                transform: `translateY(${virtualItem.start}px)`,
+                boxSizing: 'border-box',
+              }}
+            >
+              {renderRow(virtualItem.index)}
+            </div>
+          ))}
         </div>
       </div>
     );
@@ -691,8 +684,8 @@ export function TextReader({ content: rawContent, title, bookId, onClose }: Text
           onClick={() => onSelect(index)}
           className={`w-full text-left px-5 py-3.5 transition-all duration-200 ${
             currentChapter === index
-              ? 'bg-blue-200 border-l-4 border-blue-500'
-              : 'hover:bg-gray-100 border-l-4 border-transparent'
+              ? 'bg-primary/20 border-l-4 border-primary'
+              : 'hover:bg-black/5 border-l-4 border-transparent'
           }`}
           style={{ borderBottom: `1px solid ${currentTheme.text}10` }}
         >
@@ -996,7 +989,7 @@ export function TextReader({ content: rawContent, title, bookId, onClose }: Text
                   step="1"
                   value={settings.fontSize}
                   onChange={e => updateSetting('fontSize', Number(e.target.value))}
-                  className="w-full accent-blue-500"
+                  className="w-full accent-primary"
                 />
               </div>
               <div className="space-y-2">
@@ -1009,7 +1002,7 @@ export function TextReader({ content: rawContent, title, bookId, onClose }: Text
                       key={f.name}
                       onClick={() => updateSetting('fontFamily', f.value)}
                       className={`text-xs h-9 rounded-md border transition-colors ${
-                        settings.fontFamily === f.value ? 'border-blue-500 bg-blue-100' : 'border-gray-200 hover:border-gray-300'
+                        settings.fontFamily === f.value ? 'border-primary bg-primary/10' : 'border-gray-200 hover:border-gray-300'
                       }`}
                       style={{ fontFamily: f.value }}
                     >
@@ -1028,7 +1021,7 @@ export function TextReader({ content: rawContent, title, bookId, onClose }: Text
                       key={i}
                       onClick={() => updateSetting('theme', i)}
                       className={`aspect-square rounded-lg border-2 transition-all ${
-                        settings.theme === i ? 'border-blue-500' : 'border-transparent'
+                        settings.theme === i ? 'border-primary' : 'border-transparent'
                       }`}
                       style={{ backgroundColor: t.bg }}
                     >
@@ -1048,7 +1041,7 @@ export function TextReader({ content: rawContent, title, bookId, onClose }: Text
                       onClick={() => updateSetting('pageMode', m.value as 'scroll' | 'page')}
                       className={`flex-1 gap-2 h-9 rounded-md border transition-colors ${
                         settings.pageMode === m.value
-                          ? 'border-blue-500 bg-blue-100'
+                          ? 'border-primary bg-primary/10'
                           : 'border-gray-200 hover:border-gray-300'
                       }`}
                     >
@@ -1068,7 +1061,7 @@ export function TextReader({ content: rawContent, title, bookId, onClose }: Text
                       onClick={() => updateSetting('textAlign', a.value as 'left' | 'center' | 'justify')}
                       className={`flex-1 gap-2 h-9 rounded-md border transition-colors ${
                         settings.textAlign === a.value
-                          ? 'border-blue-500 bg-blue-100'
+                          ? 'border-primary bg-primary/10'
                           : 'border-gray-200 hover:border-gray-300'
                       }`}
                     >
@@ -1093,7 +1086,7 @@ export function TextReader({ content: rawContent, title, bookId, onClose }: Text
                   step="0.1"
                   value={settings.lineHeight}
                   onChange={e => updateSetting('lineHeight', Number(e.target.value))}
-                  className="w-full accent-blue-500"
+                  className="w-full accent-primary"
                 />
               </div>
               <div className="space-y-2">
@@ -1112,7 +1105,7 @@ export function TextReader({ content: rawContent, title, bookId, onClose }: Text
                   step="0.1"
                   value={settings.letterSpacing}
                   onChange={e => updateSetting('letterSpacing', Number(e.target.value))}
-                  className="w-full accent-blue-500"
+                  className="w-full accent-primary"
                 />
               </div>
               <div className="space-y-2">
@@ -1131,7 +1124,7 @@ export function TextReader({ content: rawContent, title, bookId, onClose }: Text
                   step="0.1"
                   value={settings.paragraphSpacing}
                   onChange={e => updateSetting('paragraphSpacing', Number(e.target.value))}
-                  className="w-full accent-blue-500"
+                  className="w-full accent-primary"
                 />
               </div>
               <div className="flex items-center justify-between py-2">
@@ -1148,7 +1141,7 @@ export function TextReader({ content: rawContent, title, bookId, onClose }: Text
                   type="checkbox"
                   checked={settings.autoHideHeader}
                   onChange={e => updateSetting('autoHideHeader', e.target.checked)}
-                  className="accent-blue-500"
+                  className="accent-primary"
                 />
               </div>
               <div className="space-y-2">
@@ -1168,7 +1161,7 @@ export function TextReader({ content: rawContent, title, bookId, onClose }: Text
                   step="10"
                   value={autoReadSpeed}
                   onChange={e => setAutoReadSpeed(Number(e.target.value))}
-                  className="w-full accent-blue-500"
+                  className="w-full accent-primary"
                 />
                 <p className="text-xs opacity-50" style={{ color: currentTheme.text }}>
                   数值越小速度越快
