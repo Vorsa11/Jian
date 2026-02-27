@@ -22,6 +22,7 @@ import {
   Trash2,
   PanelLeft,
   PanelRight,
+  Check,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
@@ -33,18 +34,18 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip
 import { cn } from '@/lib/utils';
 import { toast } from 'sonner';
 
-// 保持能工作的 Worker 配置
+// 修复 Worker 配置（去除空格）
 pdfjs.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${pdfjs.version}/build/pdf.worker.min.mjs`;
 
-// 扩展的批注类型（确保与后端一致）
 interface PDFAnnotation {
   id: string;
   page: number;
-  type: 'note' | 'highlight' | 'text';
+  type: 'note' | 'highlight';
   content: string;
   color: string;
   x?: number;
   y?: number;
+  rects?: Array<{ left: number; top: number; width: number; height: number }>;
   quote?: string;
   createdAt: string;
   updatedAt: string;
@@ -68,7 +69,6 @@ interface PDFViewerProps {
   onClose?: () => void;
 }
 
-// 工具函数：格式化日期
 const formatDate = (dateString: string) => {
   const date = new Date(dateString);
   return date.toLocaleDateString('zh-CN', {
@@ -89,7 +89,6 @@ export function PDFViewer({
   onDownloadFile,
   onClose,
 }: PDFViewerProps) {
-  // 核心状态
   const [numPages, setNumPages] = useState(0);
   const [pageNumber, setPageNumber] = useState(1);
   const [scale, setScale] = useState(1.2);
@@ -98,62 +97,62 @@ export function PDFViewer({
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [isDownloadDialogOpen, setIsDownloadDialogOpen] = useState(false);
   const [includeAnnotations, setIncludeAnnotations] = useState(true);
-  
-  // 视图模式：single | scroll | thumbnails
   const [viewMode, setViewMode] = useState<'single' | 'scroll' | 'thumbnails'>('single');
-  
-  // 侧边栏状态
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [sidebarTab, setSidebarTab] = useState<'thumbnails' | 'annotations'>('thumbnails');
   
-  // 批注状态
   const [activeTool, setActiveTool] = useState<'select' | 'note' | 'highlight'>('select');
   const [selectedAnnotation, setSelectedAnnotation] = useState<PDFAnnotation | null>(null);
   const [editingAnnotation, setEditingAnnotation] = useState<PDFAnnotation | null>(null);
   
-  const [pendingAnnotation, setPendingAnnotation] = useState<{
+  const [selection, setSelection] = useState<{
+    text: string;
+    rects: Array<{ left: number; top: number; width: number; height: number }>;
+    page: number;
+  } | null>(null);
+  
+  const [pendingNote, setPendingNote] = useState<{
     x: number;
     y: number;
     page: number;
-    type: 'note' | 'highlight';
-    quote?: string;
   } | null>(null);
   
-  // 移动端检测
   const [isMobile, setIsMobile] = useState(false);
   const [showToolbar, setShowToolbar] = useState(true);
+  const [showFloatingTools, setShowFloatingTools] = useState(false);
   const toolbarTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
   
-  // 触摸手势
-  const touchStart = useRef<{ x: number; y: number } | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const pageRef = useRef<HTMLDivElement>(null);
+  const touchStart = useRef<{ x: number; y: number } | null>(null);
+  const lastTap = useRef<number>(0);
 
-  // 记忆缩放级别
-  const savedScale = useRef(1.2);
-
-  // 初始化
   useEffect(() => {
     const checkMobile = () => setIsMobile(window.innerWidth < 768);
     checkMobile();
     window.addEventListener('resize', checkMobile);
     
-    // 恢复阅读进度
     const saved = localStorage.getItem(`pdf-progress-${book.id}`);
     if (saved) setPageNumber(parseInt(saved, 10));
     
     return () => window.removeEventListener('resize', checkMobile);
   }, [book.id]);
 
-  // 自动隐藏工具栏（移动端）
+  useEffect(() => {
+    const handleFullscreenChange = () => {
+      setIsFullscreen(!!document.fullscreenElement);
+    };
+    document.addEventListener('fullscreenchange', handleFullscreenChange);
+    return () => document.removeEventListener('fullscreenchange', handleFullscreenChange);
+  }, []);
+
   const resetToolbarTimer = useCallback(() => {
-    if (!isMobile) return;
+    if (!isMobile && !isFullscreen) return;
     setShowToolbar(true);
     if (toolbarTimeout.current) clearTimeout(toolbarTimeout.current);
-    toolbarTimeout.current = setTimeout(() => setShowToolbar(false), 3000);
-  }, [isMobile]);
+    toolbarTimeout.current = setTimeout(() => setShowToolbar(false), 4000);
+  }, [isMobile, isFullscreen]);
 
-  // PDF 加载事件
   const onDocumentLoadSuccess = useCallback(({ numPages }: { numPages: number }) => {
     setNumPages(numPages);
     setLoadError(null);
@@ -162,87 +161,140 @@ export function PDFViewer({
       const page = parseInt(saved, 10);
       if (page <= numPages) setPageNumber(page);
     }
-    toast.success(`已加载 ${numPages} 页`);
   }, [book.id]);
 
   const onDocumentLoadError = useCallback((error: Error) => {
     console.error('PDF load error:', error);
-    setLoadError('无法加载 PDF 文件，请检查链接或网络连接');
+    setLoadError('无法加载 PDF 文件');
     toast.error('PDF 加载失败');
   }, []);
 
-  // 页面导航
   const goToPage = useCallback((page: number) => {
     const target = Math.max(1, Math.min(page, numPages));
     setPageNumber(target);
     localStorage.setItem(`pdf-progress-${book.id}`, String(target));
+    setSelection(null);
+    window.getSelection()?.removeAllRanges();
   }, [numPages, book.id]);
 
   const goToPrev = () => goToPage(pageNumber - 1);
   const goToNext = () => goToPage(pageNumber + 1);
 
-  // 缩放控制
   const handleZoom = useCallback((delta: number) => {
-    setScale(s => {
-      const newScale = Math.max(0.5, Math.min(3, s + delta));
-      savedScale.current = newScale;
-      return newScale;
-    });
+    setScale(s => Math.max(0.5, Math.min(3, s + delta)));
   }, []);
 
   const fitToWidth = useCallback(() => {
     const containerWidth = containerRef.current?.clientWidth || 800;
     const sidebarWidth = sidebarOpen && !isMobile ? 240 : 0;
     const availableWidth = containerWidth - sidebarWidth - 48;
-    setScale(Math.min(availableWidth / 612, 2)); // 612 是标准 PDF 宽度
+    setScale(Math.min(availableWidth / 612, 2));
   }, [sidebarOpen, isMobile]);
 
-  // 全屏
   const toggleFullscreen = useCallback(async () => {
     try {
       if (!document.fullscreenElement) {
         await containerRef.current?.requestFullscreen();
-        setIsFullscreen(true);
       } else {
         await document.exitFullscreen();
-        setIsFullscreen(false);
       }
     } catch {
       toast.error('无法切换全屏模式');
     }
   }, []);
 
-  // 批注操作
+  const handleTextSelection = useCallback(() => {
+    if (activeTool !== 'highlight') return;
+    
+    const sel = window.getSelection();
+    if (!sel || sel.isCollapsed) {
+      setSelection(null);
+      return;
+    }
+    
+    const text = sel.toString().trim();
+    if (!text) return;
+    
+    const range = sel.getRangeAt(0);
+    const rects = Array.from(range.getClientRects()).map(rect => ({
+      left: rect.left,
+      top: rect.top,
+      width: rect.width,
+      height: rect.height,
+    }));
+    
+    const pageElement = (range.startContainer.parentElement?.closest('.react-pdf__Page') ||
+                        range.startContainer.parentElement?.closest('[data-page-number]')) as HTMLElement | null;
+    
+    if (pageElement) {
+      const pageNum = parseInt(pageElement.getAttribute('data-page-number') || String(pageNumber), 10);
+      setSelection({
+        text,
+        rects,
+        page: pageNum,
+      });
+      setShowFloatingTools(true);
+    }
+  }, [activeTool, pageNumber]);
+
+  const addHighlight = useCallback((content: string = '') => {
+    if (!selection) return;
+    
+    const pageElement = document.querySelector(`[data-page-number="${selection.page}"]`);
+    if (!pageElement) return;
+    
+    const pageRect = pageElement.getBoundingClientRect();
+    const relativeRects = selection.rects.map(rect => ({
+      left: ((rect.left - pageRect.left) / pageRect.width) * 100,
+      top: ((rect.top - pageRect.top) / pageRect.height) * 100,
+      width: (rect.width / pageRect.width) * 100,
+      height: (rect.height / pageRect.height) * 100,
+    }));
+    
+    onAddAnnotation({
+      bookId: book.id,
+      page: selection.page,
+      type: 'highlight',
+      content,
+      color: '#fef08a',
+      rects: relativeRects,
+      quote: selection.text,
+    });
+    
+    setSelection(null);
+    setShowFloatingTools(false);
+    setActiveTool('select');
+    window.getSelection()?.removeAllRanges();
+    toast.success('高亮已添加');
+  }, [selection, book.id, onAddAnnotation]);
+
   const handlePageClick = useCallback((e: React.MouseEvent, pageNum: number) => {
-    if (activeTool === 'select' || !pageRef.current) return;
+    if (activeTool !== 'note' || !pageRef.current) return;
     
     const rect = pageRef.current.getBoundingClientRect();
     const x = (e.clientX - rect.left) / rect.width;
     const y = (e.clientY - rect.top) / rect.height;
     
-    if (activeTool === 'note') {
-      setPendingAnnotation({ x, y, page: pageNum, type: 'note' });
-    }
+    setPendingNote({ x, y, page: pageNum });
   }, [activeTool]);
 
-  const confirmAddAnnotation = useCallback((content: string) => {
-    if (!pendingAnnotation || !content.trim()) return;
+  const confirmAddNote = useCallback((content: string) => {
+    if (!pendingNote || !content.trim()) return;
     
     onAddAnnotation({
       bookId: book.id,
-      page: pendingAnnotation.page,
-      x: pendingAnnotation.x,
-      y: pendingAnnotation.y,
+      page: pendingNote.page,
+      x: pendingNote.x,
+      y: pendingNote.y,
       content: content.trim(),
-      color: pendingAnnotation.type === 'highlight' ? '#fef08a' : '#fbbf24',
-      type: pendingAnnotation.type,
-      quote: pendingAnnotation.quote,
+      color: '#fbbf24',
+      type: 'note',
     });
     
-    setPendingAnnotation(null);
+    setPendingNote(null);
     setActiveTool('select');
     toast.success('批注已添加');
-  }, [pendingAnnotation, book.id, onAddAnnotation]);
+  }, [pendingNote, book.id, onAddAnnotation]);
 
   const handleDelete = useCallback((id: string) => {
     onDeleteAnnotation(id);
@@ -251,7 +303,6 @@ export function PDFViewer({
     toast.success('批注已删除');
   }, [onDeleteAnnotation]);
 
-  // 键盘快捷键
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.target instanceof HTMLTextAreaElement || e.target instanceof HTMLInputElement) {
@@ -279,23 +330,48 @@ export function PDFViewer({
           e.preventDefault();
           goToPage(numPages);
           break;
+        case 'h':
+          if (!e.ctrlKey && !e.metaKey) {
+            e.preventDefault();
+            setActiveTool(activeTool === 'highlight' ? 'select' : 'highlight');
+          }
+          break;
+        case 'n':
+          if (!e.ctrlKey && !e.metaKey) {
+            e.preventDefault();
+            setActiveTool(activeTool === 'note' ? 'select' : 'note');
+          }
+          break;
         case 'Escape':
-          if (selectedAnnotation) setSelectedAnnotation(null);
-          else if (pendingAnnotation) setPendingAnnotation(null);
-          else if (activeTool !== 'select') setActiveTool('select');
-          else if (onClose) onClose();
+          if (selection) {
+            setSelection(null);
+            window.getSelection()?.removeAllRanges();
+          } else if (selectedAnnotation) {
+            setSelectedAnnotation(null);
+          } else if (pendingNote) {
+            setPendingNote(null);
+          } else if (activeTool !== 'select') {
+            setActiveTool('select');
+          } else if (onClose) {
+            onClose();
+          }
           break;
       }
     };
     
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [goToNext, goToPrev, goToPage, numPages, selectedAnnotation, pendingAnnotation, activeTool, onClose]);
+  }, [goToNext, goToPrev, goToPage, numPages, selectedAnnotation, pendingNote, activeTool, onClose, selection]);
 
-  // 触摸手势（移动端滑动翻页）
   const onTouchStart = (e: React.TouchEvent) => {
     touchStart.current = { x: e.touches[0].clientX, y: e.touches[0].clientY };
     resetToolbarTimer();
+    
+    const now = Date.now();
+    if (now - lastTap.current < 300) {
+      setScale(s => s > 1.5 ? 1.0 : 1.5);
+    }
+    lastTap.current = now;
   };
 
   const onTouchEnd = (e: React.TouchEvent) => {
@@ -312,81 +388,34 @@ export function PDFViewer({
     touchStart.current = null;
   };
 
-  // 当前页批注
   const currentAnnotations = useMemo(() => 
     annotations.filter(a => a.page === pageNumber),
   [annotations, pageNumber]);
 
-  // 渲染缩略图
-  const renderThumbnails = () => (
-    <div className="space-y-2 p-2">
-      {Array.from({ length: numPages }, (_, i) => i + 1).map(page => (
-        <button
-          key={page}
-          onClick={() => {
-            goToPage(page);
-            if (isMobile) setSidebarOpen(false);
-          }}
-          className={cn(
-            "w-full relative aspect-[3/4] rounded-lg overflow-hidden transition-all",
-            pageNumber === page 
-              ? "ring-2 ring-primary ring-offset-1" 
-              : "hover:opacity-80 opacity-60"
-          )}
-        >
-          <Page
-            pageNumber={page}
-            scale={0.15}
-            renderTextLayer={false}
-            renderAnnotationLayer={false}
-          />
-          <div className="absolute bottom-0 inset-x-0 bg-black/60 text-white text-[10px] py-0.5 text-center">
-            {page}
-          </div>
-        </button>
-      ))}
-    </div>
-  );
-
-  // 渲染批注列表
-  const renderAnnotationList = () => (
-    <div className="space-y-3 p-3">
-      {annotations.length === 0 ? (
-        <div className="text-center text-muted-foreground py-8 text-sm">
-          <MessageSquare className="h-8 w-8 mx-auto mb-2 opacity-50" />
-          暂无批注
+  const renderHighlights = (pageNum: number) => {
+    return annotations
+      .filter(ann => ann.page === pageNum && ann.type === 'highlight' && ann.rects)
+      .map(ann => (
+        <div key={ann.id} className="absolute inset-0 pointer-events-none">
+          {ann.rects!.map((rect, i) => (
+            <div
+              key={i}
+              className="absolute bg-yellow-300/40 hover:bg-yellow-300/60 cursor-pointer pointer-events-auto transition-colors"
+              style={{
+                left: `${rect.left}%`,
+                top: `${rect.top}%`,
+                width: `${rect.width}%`,
+                height: `${rect.height}%`,
+              }}
+              onClick={(e) => {
+                e.stopPropagation();
+                setSelectedAnnotation(ann);
+              }}
+            />
+          ))}
         </div>
-      ) : (
-        annotations.map(ann => (
-          <div
-            key={ann.id}
-            onClick={() => {
-              goToPage(ann.page);
-              setSelectedAnnotation(ann);
-              if (isMobile) setSidebarOpen(false);
-            }}
-            className={cn(
-              "p-3 rounded-lg border text-sm cursor-pointer transition-colors",
-              selectedAnnotation?.id === ann.id 
-                ? "border-primary bg-primary/5" 
-                : "border-border hover:bg-accent"
-            )}
-          >
-            <div className="flex items-center gap-2 mb-1 text-xs text-muted-foreground">
-              <span className={cn(
-                "w-2 h-2 rounded-full",
-                ann.type === 'highlight' ? "bg-yellow-400" : "bg-amber-400"
-              )} />
-              <span>第 {ann.page} 页</span>
-              <span>·</span>
-              <span>{formatDate(ann.createdAt)}</span>
-            </div>
-            <p className="line-clamp-2 text-xs">{ann.content || ann.quote || '[无文本]'}</p>
-          </div>
-        ))
-      )}
-    </div>
-  );
+      ));
+  };
 
   if (viewMode === 'thumbnails') {
     return (
@@ -410,7 +439,21 @@ export function PDFViewer({
           <div className="p-4">
             <Document file={fileUrl} onLoadSuccess={onDocumentLoadSuccess} onLoadError={onDocumentLoadError}>
               <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-4">
-                {renderThumbnails()}
+                {Array.from({ length: numPages }, (_, i) => i + 1).map(page => (
+                  <button
+                    key={page}
+                    onClick={() => {
+                      setPageNumber(page);
+                      setViewMode('single');
+                    }}
+                    className="relative aspect-[3/4] rounded-lg overflow-hidden hover:ring-2 hover:ring-primary transition-all"
+                  >
+                    <Page pageNumber={page} scale={0.2} renderTextLayer={false} renderAnnotationLayer={false} />
+                    <div className="absolute bottom-0 inset-x-0 bg-black/60 text-white text-[10px] py-1 text-center">
+                      {page}
+                    </div>
+                  </button>
+                ))}
               </div>
             </Document>
           </div>
@@ -422,16 +465,31 @@ export function PDFViewer({
   return (
     <div 
       ref={containerRef}
-      className="flex h-full bg-background overflow-hidden relative"
+      className={cn(
+        "flex h-full bg-background overflow-hidden relative",
+        isFullscreen && "fixed inset-0 z-50"
+      )}
       onMouseMove={resetToolbarTimer}
       onClick={resetToolbarTimer}
     >
-      {/* 左侧边栏 */}
+      {isFullscreen && (
+        <Button
+          variant="secondary"
+          size="sm"
+          className="absolute top-4 right-4 z-50 shadow-lg opacity-0 hover:opacity-100 transition-opacity"
+          onClick={toggleFullscreen}
+        >
+          <Minimize2 className="h-4 w-4 mr-2" />
+          退出全屏
+        </Button>
+      )}
+
+      {/* 修复：移除 viewMode !== 'thumbnails' 因为前面已经 return 了 thumbnails 的情况 */}
       {!isMobile && sidebarOpen && (
-        <div className="w-60 border-r bg-muted/30 flex flex-col animate-in slide-in-from-left">
+        <div className="w-60 border-r bg-muted/30 flex flex-col">
           <div className="flex items-center justify-between p-3 border-b">
-            <span className="font-semibold text-sm">{book.title}</span>
-            <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => setSidebarOpen(false)}>
+            <span className="font-semibold text-sm truncate pr-2">{book.title}</span>
+            <Button variant="ghost" size="icon" className="h-8 w-8 shrink-0" onClick={() => setSidebarOpen(false)}>
               <PanelLeft className="h-4 w-4" />
             </Button>
           </div>
@@ -456,21 +514,69 @@ export function PDFViewer({
             </button>
           </div>
           <ScrollArea className="flex-1">
-            <Document file={fileUrl} onLoadSuccess={onDocumentLoadSuccess} onLoadError={onDocumentLoadError}>
-              {sidebarTab === 'thumbnails' ? renderThumbnails() : renderAnnotationList()}
+            <Document file={fileUrl}>
+              {sidebarTab === 'thumbnails' ? (
+                <div className="p-2 space-y-2">
+                  {Array.from({ length: numPages }, (_, i) => i + 1).map(page => (
+                    <button
+                      key={page}
+                      onClick={() => goToPage(page)}
+                      className={cn(
+                        "w-full relative aspect-[3/4] rounded-lg overflow-hidden transition-all",
+                        pageNumber === page ? "ring-2 ring-primary ring-offset-1" : "opacity-60 hover:opacity-100"
+                      )}
+                    >
+                      <Page pageNumber={page} scale={0.15} renderTextLayer={false} renderAnnotationLayer={false} />
+                      <div className="absolute bottom-0 inset-x-0 bg-black/60 text-white text-[10px] py-0.5 text-center">
+                        {page}
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              ) : (
+                <div className="p-3 space-y-3">
+                  {annotations.length === 0 ? (
+                    <div className="text-center text-muted-foreground py-8 text-sm">
+                      <MessageSquare className="h-8 w-8 mx-auto mb-2 opacity-50" />
+                      暂无批注
+                    </div>
+                  ) : (
+                    annotations.map(ann => (
+                      <div
+                        key={ann.id}
+                        onClick={() => {
+                          goToPage(ann.page);
+                          setSelectedAnnotation(ann);
+                        }}
+                        className={cn(
+                          "p-3 rounded-lg border text-sm cursor-pointer transition-colors",
+                          selectedAnnotation?.id === ann.id ? "border-primary bg-primary/5" : "border-border hover:bg-accent"
+                        )}
+                      >
+                        <div className="flex items-center gap-2 mb-1 text-xs text-muted-foreground">
+                          <span className={cn(
+                            "w-2 h-2 rounded-full",
+                            ann.type === 'highlight' ? "bg-yellow-400" : "bg-amber-400"
+                          )} />
+                          <span>第 {ann.page} 页</span>
+                        </div>
+                        <p className="line-clamp-2 text-xs">{ann.content || ann.quote || '[无文本]'}</p>
+                      </div>
+                    ))
+                  )}
+                </div>
+              )}
             </Document>
           </ScrollArea>
         </div>
       )}
 
-      {/* 主内容区 */}
       <div className="flex-1 flex flex-col relative">
-        {/* 顶部悬浮工具栏 */}
         <div className={cn(
           "absolute top-4 left-1/2 -translate-x-1/2 z-40 transition-all duration-300",
-          !showToolbar && isMobile && "-translate-y-20 opacity-0 pointer-events-none"
+          !showToolbar && isMobile && "-translate-y-24 opacity-0"
         )}>
-          <div className="flex items-center gap-1 bg-background/90 backdrop-blur-md border rounded-full shadow-lg px-2 py-1.5">
+          <div className="flex items-center gap-1 bg-background/95 backdrop-blur-md border rounded-full shadow-lg px-2 py-1.5">
             {onClose && (
               <Tooltip>
                 <TooltipTrigger asChild>
@@ -478,7 +584,7 @@ export function PDFViewer({
                     <ArrowLeft className="h-4 w-4" />
                   </Button>
                 </TooltipTrigger>
-                <TooltipContent>退出 (Esc)</TooltipContent>
+                <TooltipContent>退出</TooltipContent>
               </Tooltip>
             )}
             
@@ -489,96 +595,56 @@ export function PDFViewer({
                     <PanelRight className="h-4 w-4" />
                   </Button>
                 </TooltipTrigger>
-                <TooltipContent>显示侧边栏</TooltipContent>
+                <TooltipContent>侧边栏</TooltipContent>
               </Tooltip>
             )}
 
             <div className="w-px h-4 bg-border mx-1" />
 
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button variant="ghost" size="icon" className="h-8 w-8 rounded-full" onClick={goToPrev} disabled={pageNumber <= 1}>
-                  <ChevronLeft className="h-4 w-4" />
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent>上一页</TooltipContent>
-            </Tooltip>
+            <Button variant="ghost" size="icon" className="h-8 w-8 rounded-full" onClick={goToPrev} disabled={pageNumber <= 1}>
+              <ChevronLeft className="h-4 w-4" />
+            </Button>
 
-            <div className="flex items-center px-2">
-              <input
-                type="number"
-                value={pageNumber}
-                onChange={(e) => goToPage(parseInt(e.target.value) || 1)}
-                className="w-10 text-center text-sm bg-transparent border-none focus:outline-none focus:ring-0 p-0"
-                min={1}
-                max={numPages}
-              />
-              <span className="text-sm text-muted-foreground mx-1">/</span>
-              <span className="text-sm text-muted-foreground w-6">{numPages}</span>
+            <div className="flex items-center px-2 min-w-[80px] justify-center">
+              <span className="text-sm font-mono">{pageNumber} / {numPages}</span>
             </div>
 
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button variant="ghost" size="icon" className="h-8 w-8 rounded-full" onClick={goToNext} disabled={pageNumber >= numPages}>
-                  <ChevronRight className="h-4 w-4" />
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent>下一页</TooltipContent>
-            </Tooltip>
+            <Button variant="ghost" size="icon" className="h-8 w-8 rounded-full" onClick={goToNext} disabled={pageNumber >= numPages}>
+              <ChevronRight className="h-4 w-4" />
+            </Button>
 
             <div className="w-px h-4 bg-border mx-1" />
 
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button variant="ghost" size="icon" className="h-8 w-8 rounded-full" onClick={() => handleZoom(-0.2)}>
-                  <ZoomOut className="h-4 w-4" />
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent>缩小</TooltipContent>
-            </Tooltip>
+            <Button variant="ghost" size="icon" className="h-8 w-8 rounded-full" onClick={() => handleZoom(-0.2)}>
+              <ZoomOut className="h-4 w-4" />
+            </Button>
 
             <span className="text-xs w-10 text-center font-mono">{Math.round(scale * 100)}%</span>
 
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button variant="ghost" size="icon" className="h-8 w-8 rounded-full" onClick={() => handleZoom(0.2)}>
-                  <ZoomIn className="h-4 w-4" />
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent>放大</TooltipContent>
-            </Tooltip>
+            <Button variant="ghost" size="icon" className="h-8 w-8 rounded-full" onClick={() => handleZoom(0.2)}>
+              <ZoomIn className="h-4 w-4" />
+            </Button>
 
             <div className="w-px h-4 bg-border mx-1 hidden sm:block" />
 
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button 
-                  variant={activeTool === 'highlight' ? 'secondary' : 'ghost'} 
-                  size="icon" 
-                  className="h-8 w-8 rounded-full hidden sm:flex"
-                  onClick={() => setActiveTool(activeTool === 'highlight' ? 'select' : 'highlight')}
-                >
-                  <Highlighter className="h-4 w-4" />
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent>高亮</TooltipContent>
-            </Tooltip>
+            <Button 
+              variant={activeTool === 'highlight' ? 'default' : 'ghost'} 
+              size="icon" 
+              className="h-8 w-8 rounded-full hidden sm:flex"
+              onClick={() => setActiveTool(activeTool === 'highlight' ? 'select' : 'highlight')}
+            >
+              <Highlighter className="h-4 w-4" />
+            </Button>
 
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button 
-                  variant={activeTool === 'note' ? 'secondary' : 'ghost'} 
-                  size="icon" 
-                  className="h-8 w-8 rounded-full hidden sm:flex"
-                  onClick={() => setActiveTool(activeTool === 'note' ? 'select' : 'note')}
-                >
-                  <Plus className="h-4 w-4" />
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent>添加批注</TooltipContent>
-            </Tooltip>
+            <Button 
+              variant={activeTool === 'note' ? 'default' : 'ghost'} 
+              size="icon" 
+              className="h-8 w-8 rounded-full hidden sm:flex"
+              onClick={() => setActiveTool(activeTool === 'note' ? 'select' : 'note')}
+            >
+              <Plus className="h-4 w-4" />
+            </Button>
 
-            {/* 更多操作菜单 */}
             <Sheet>
               <SheetTrigger asChild>
                 <Button variant="ghost" size="icon" className="h-8 w-8 rounded-full">
@@ -587,7 +653,7 @@ export function PDFViewer({
               </SheetTrigger>
               <SheetContent side="bottom" className="h-auto">
                 <SheetHeader>
-                  <SheetTitle>{book.title}</SheetTitle>
+                  <SheetTitle className="text-left">{book.title}</SheetTitle>
                 </SheetHeader>
                 <div className="grid grid-cols-4 gap-4 mt-4">
                   <Button variant="outline" className="flex-col h-auto py-4" onClick={() => setViewMode('thumbnails')}>
@@ -604,35 +670,71 @@ export function PDFViewer({
                   </Button>
                   <Button variant="outline" className="flex-col h-auto py-4" onClick={toggleFullscreen}>
                     {isFullscreen ? <Minimize2 className="h-5 w-5 mb-2" /> : <Maximize2 className="h-5 w-5 mb-2" />}
-                    <span className="text-xs">{isFullscreen ? '退出全屏' : '全屏'}</span>
+                    <span className="text-xs">全屏</span>
                   </Button>
                 </div>
-                <div className="mt-4 pt-4 border-t">
+                <div className="mt-4 pt-4 border-t space-y-2">
                   <Button variant="outline" className="w-full" onClick={() => setIsDownloadDialogOpen(true)}>
                     <Download className="h-4 w-4 mr-2" />
                     下载 PDF
                   </Button>
+                  <div className="flex gap-2">
+                    <Button 
+                      variant={activeTool === 'highlight' ? 'default' : 'outline'} 
+                      className="flex-1"
+                      onClick={() => setActiveTool(activeTool === 'highlight' ? 'select' : 'highlight')}
+                    >
+                      <Highlighter className="h-4 w-4 mr-2" />
+                      高亮模式
+                    </Button>
+                    <Button 
+                      variant={activeTool === 'note' ? 'default' : 'outline'} 
+                      className="flex-1"
+                      onClick={() => setActiveTool(activeTool === 'note' ? 'select' : 'note')}
+                    >
+                      <Plus className="h-4 w-4 mr-2" />
+                      笔记模式
+                    </Button>
+                  </div>
                 </div>
               </SheetContent>
             </Sheet>
           </div>
         </div>
 
-        {/* 工具模式提示 */}
         {activeTool !== 'select' && (
           <div className="absolute top-20 left-1/2 -translate-x-1/2 z-30 bg-primary text-primary-foreground px-4 py-2 rounded-full text-sm shadow-lg animate-in fade-in slide-in-from-top-2 flex items-center gap-2">
-            <span>{activeTool === 'highlight' ? '选中文字以高亮' : '点击页面添加批注'}</span>
+            <span>{activeTool === 'highlight' ? '选中文本即可高亮标注' : '点击页面添加批注'}</span>
             <button onClick={() => setActiveTool('select')} className="hover:opacity-80">
               <X className="h-4 w-4" />
             </button>
           </div>
         )}
 
-        {/* 阅读区域 */}
+        {showFloatingTools && selection && activeTool === 'highlight' && (
+          <div 
+            className="absolute z-50 bg-popover border shadow-lg rounded-lg p-2 flex items-center gap-2 animate-in fade-in zoom-in-95"
+            style={{
+              left: Math.min(...selection.rects.map(r => r.left)) + Math.max(...selection.rects.map(r => r.width)) / 2,
+              top: Math.min(...selection.rects.map(r => r.top)) - 50,
+              transform: 'translateX(-50%)',
+            }}
+          >
+            <Button size="sm" variant="secondary" onClick={() => addHighlight()}>
+              <Highlighter className="h-4 w-4 mr-1" />
+              高亮
+            </Button>
+            <Button size="sm" variant="ghost" onClick={() => { setSelection(null); window.getSelection()?.removeAllRanges(); }}>
+              取消
+            </Button>
+          </div>
+        )}
+
         <div 
-          className="flex-1 overflow-auto bg-muted/30 relative touch-pan-y"
+          className="flex-1 overflow-auto bg-muted/30 relative touch-pan-y select-text"
           onTouchStart={onTouchStart}
           onTouchEnd={onTouchEnd}
+          onMouseUp={handleTextSelection}
         >
           {loadError ? (
             <div className="h-full flex flex-col items-center justify-center text-muted-foreground p-8">
@@ -661,15 +763,16 @@ export function PDFViewer({
               {viewMode === 'scroll' ? (
                 <div className="flex flex-col items-center gap-4 py-8">
                   {Array.from({ length: numPages }, (_, i) => i + 1).map(page => (
-                    <div key={page} className="relative">
+                    <div key={page} className="relative" data-page-number={page}>
                       <Page
                         pageNumber={page}
                         scale={isMobile ? Math.min(scale, 1.0) : scale}
                         rotate={rotation}
-                        renderTextLayer={false}
+                        renderTextLayer={true}
                         renderAnnotationLayer={false}
                         className="shadow-xl"
                       />
+                      {renderHighlights(page)}
                       <div className="absolute bottom-2 right-2 bg-black/50 text-white text-xs px-2 py-1 rounded-full">
                         {page} / {numPages}
                       </div>
@@ -680,18 +783,19 @@ export function PDFViewer({
                 <div className="min-h-full flex items-center justify-center p-4">
                   <div
                     ref={pageRef}
-                    className="relative inline-block shadow-2xl rounded-lg overflow-hidden bg-white transition-transform duration-200"
+                    className="relative inline-block shadow-2xl rounded-lg overflow-hidden bg-white"
                     style={{ 
-                      cursor: activeTool === 'select' ? 'grab' : 'crosshair',
-                      touchAction: activeTool === 'select' ? 'pan-y' : 'none'
+                      cursor: activeTool === 'note' ? 'crosshair' : 'text',
+                      touchAction: 'pan-y'
                     }}
                     onClick={(e) => handlePageClick(e, pageNumber)}
+                    data-page-number={pageNumber}
                   >
                     <Page
                       pageNumber={pageNumber}
                       scale={isMobile ? Math.min(scale, 1.2) : scale}
                       rotate={rotation}
-                      renderTextLayer={false}
+                      renderTextLayer={true}
                       renderAnnotationLayer={false}
                       loading={
                         <div className="w-[300px] h-[400px] md:w-[600px] md:h-[800px] flex items-center justify-center bg-white">
@@ -700,8 +804,9 @@ export function PDFViewer({
                       }
                     />
                     
-                    {/* 批注渲染 */}
-                    {currentAnnotations.map(ann => {
+                    {renderHighlights(pageNumber)}
+                    
+                    {currentAnnotations.filter(a => a.type === 'note').map(ann => {
                       if (ann.x === undefined || ann.y === undefined) return null;
                       return (
                         <button
@@ -718,11 +823,10 @@ export function PDFViewer({
                       );
                     })}
 
-                    {/* 待添加批注预览 */}
-                    {pendingAnnotation?.page === pageNumber && (
+                    {pendingNote?.page === pageNumber && (
                       <div
                         className="absolute w-6 h-6 -ml-3 -mt-3 rounded-full bg-primary flex items-center justify-center shadow-lg z-20 border-2 border-white animate-bounce"
-                        style={{ left: `${pendingAnnotation.x * 100}%`, top: `${pendingAnnotation.y * 100}%` }}
+                        style={{ left: `${pendingNote.x * 100}%`, top: `${pendingNote.y * 100}%` }}
                       >
                         <Plus className="h-3 w-3 text-primary-foreground" />
                       </div>
@@ -734,33 +838,49 @@ export function PDFViewer({
           )}
         </div>
 
-        {/* 底部进度条（移动端） */}
-        {isMobile && numPages > 0 && (
-          <div className="absolute bottom-0 left-0 right-0 h-1 bg-muted">
-            <div 
-              className="h-full bg-primary transition-all duration-300"
-              style={{ width: `${(pageNumber / numPages) * 100}%` }}
-            />
-          </div>
-        )}
+        <div className="absolute bottom-0 left-0 right-0 h-1 bg-muted z-30">
+          <div 
+            className="h-full bg-primary transition-all duration-300"
+            style={{ width: `${(pageNumber / numPages) * 100}%` }}
+          />
+        </div>
 
-        {/* 移动端底部导航 */}
         {isMobile && (
           <div className={cn(
-            "absolute bottom-6 left-4 right-4 flex items-center justify-between transition-all duration-300",
+            "absolute bottom-6 left-4 right-4 flex items-center justify-between transition-all duration-300 z-30",
             !showToolbar && "translate-y-20 opacity-0"
           )}>
             <Button variant="secondary" size="icon" className="rounded-full shadow-lg h-12 w-12" onClick={goToPrev} disabled={pageNumber <= 1}>
               <ChevronLeft className="h-6 w-6" />
             </Button>
             
-            <Button 
-              variant="secondary" 
-              className="rounded-full shadow-lg px-4"
-              onClick={() => setSidebarOpen(true)}
-            >
-              <span className="text-sm font-mono">{pageNumber} / {numPages}</span>
-            </Button>
+            <div className="flex gap-2">
+              <Button 
+                variant={activeTool === 'highlight' ? 'default' : 'secondary'} 
+                size="icon"
+                className="rounded-full shadow-lg h-12 w-12"
+                onClick={() => setActiveTool(activeTool === 'highlight' ? 'select' : 'highlight')}
+              >
+                <Highlighter className="h-5 w-5" />
+              </Button>
+              
+              <Button 
+                variant="secondary" 
+                className="rounded-full shadow-lg px-4 h-12"
+                onClick={() => setSidebarOpen(true)}
+              >
+                <span className="text-sm font-mono">{pageNumber}</span>
+              </Button>
+
+              <Button 
+                variant={activeTool === 'note' ? 'default' : 'secondary'} 
+                size="icon"
+                className="rounded-full shadow-lg h-12 w-12"
+                onClick={() => setActiveTool(activeTool === 'note' ? 'select' : 'note')}
+              >
+                <Plus className="h-5 w-5" />
+              </Button>
+            </div>
 
             <Button variant="secondary" size="icon" className="rounded-full shadow-lg h-12 w-12" onClick={goToNext} disabled={pageNumber >= numPages}>
               <ChevronRight className="h-6 w-6" />
@@ -769,35 +889,34 @@ export function PDFViewer({
         )}
       </div>
 
-      {/* 批注编辑弹窗 */}
-      <Dialog open={!!pendingAnnotation} onOpenChange={() => setPendingAnnotation(null)}>
+      <Dialog open={!!pendingNote} onOpenChange={() => setPendingNote(null)}>
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
             <DialogTitle>添加批注</DialogTitle>
           </DialogHeader>
           <Textarea
-            placeholder="输入批注内容..."
+            placeholder="写下你的想法..."
             autoFocus
             className="mt-4 min-h-[100px]"
             onKeyDown={(e) => {
-              if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
-                confirmAddAnnotation((e.target as HTMLTextAreaElement).value);
+              if (e.key === 'Enter' && e.metaKey) {
+                confirmAddNote((e.target as HTMLTextAreaElement).value);
               }
             }}
           />
           <div className="flex justify-end gap-2 mt-4">
-            <Button variant="outline" onClick={() => setPendingAnnotation(null)}>取消</Button>
+            <Button variant="outline" onClick={() => setPendingNote(null)}>取消</Button>
             <Button onClick={(e) => {
               const textarea = e.currentTarget.parentElement?.previousElementSibling as HTMLTextAreaElement;
-              confirmAddAnnotation(textarea?.value || '');
+              confirmAddNote(textarea?.value || '');
             }}>
-              添加 (⌘+Enter)
+              <Check className="h-4 w-4 mr-2" />
+              添加
             </Button>
           </div>
         </DialogContent>
       </Dialog>
 
-      {/* 查看批注详情 */}
       <Dialog open={!!selectedAnnotation} onOpenChange={() => {
         setSelectedAnnotation(null);
         setEditingAnnotation(null);
@@ -805,11 +924,17 @@ export function PDFViewer({
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
-              <MessageSquare className="h-5 w-5" />
-              批注详情
+              {selectedAnnotation?.type === 'highlight' ? <Highlighter className="h-5 w-5" /> : <MessageSquare className="h-5 w-5" />}
+              {selectedAnnotation?.type === 'highlight' ? '高亮批注' : '笔记'}
             </DialogTitle>
           </DialogHeader>
           <div className="mt-4">
+            {selectedAnnotation?.quote && (
+              <div className="bg-yellow-50 border-l-4 border-yellow-400 p-3 mb-4 text-sm italic text-muted-foreground">
+                "{selectedAnnotation.quote}"
+              </div>
+            )}
+            
             {editingAnnotation?.id === selectedAnnotation?.id ? (
               <>
                 <Textarea
@@ -832,8 +957,8 @@ export function PDFViewer({
               </>
             ) : (
               <>
-                <div className="bg-muted p-4 rounded-lg mb-4">
-                  <p className="whitespace-pre-wrap text-sm">{selectedAnnotation?.content}</p>
+                <div className="bg-muted p-4 rounded-lg mb-4 min-h-[60px]">
+                  <p className="whitespace-pre-wrap text-sm">{selectedAnnotation?.content || <span className="text-muted-foreground italic">暂无笔记内容</span>}</p>
                 </div>
                 <div className="flex items-center justify-between text-xs text-muted-foreground mb-4">
                   <span>第 {selectedAnnotation?.page} 页</span>
@@ -855,7 +980,6 @@ export function PDFViewer({
         </DialogContent>
       </Dialog>
 
-      {/* 下载对话框 */}
       <Dialog open={isDownloadDialogOpen} onOpenChange={setIsDownloadDialogOpen}>
         <DialogContent>
           <DialogHeader>
@@ -892,16 +1016,15 @@ export function PDFViewer({
         </DialogContent>
       </Dialog>
 
-      {/* 移动端侧边栏 Drawer */}
       {isMobile && (
         <Sheet open={sidebarOpen} onOpenChange={setSidebarOpen}>
           <SheetContent side="left" className="w-[280px] p-0">
             <SheetHeader className="p-4 border-b">
-              <SheetTitle className="text-left">{book.title}</SheetTitle>
+              <SheetTitle className="text-left text-sm">{book.title}</SheetTitle>
             </SheetHeader>
             <ScrollArea className="h-[calc(100vh-80px)]">
               <Document file={fileUrl}>
-                <div className="p-4 space-y-2">
+                <div className="p-2 space-y-2">
                   {Array.from({ length: numPages }, (_, i) => i + 1).map(page => (
                     <button
                       key={page}
@@ -917,7 +1040,12 @@ export function PDFViewer({
                       <div className="w-12 h-16 bg-white rounded border overflow-hidden relative shrink-0">
                         <Page pageNumber={page} scale={0.1} renderTextLayer={false} renderAnnotationLayer={false} />
                       </div>
-                      <span className="text-sm">第 {page} 页</span>
+                      <div className="flex-1 text-left">
+                        <span className="text-sm block">第 {page} 页</span>
+                        <span className="text-xs text-muted-foreground">
+                          {annotations.filter(a => a.page === page).length} 条批注
+                        </span>
+                      </div>
                     </button>
                   ))}
                 </div>
