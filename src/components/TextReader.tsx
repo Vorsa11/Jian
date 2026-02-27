@@ -50,23 +50,74 @@ const THEMES = [
   { name: '羊皮纸', bg: '#f5f0e6', text: '#5c4b37', accent: '#8b6914', border: '#e5ddd0', secondaryBg: '#efe8db' },
 ];
 
-// ============================== 数据清洗工具函数 ==============================
+// ============================== 编码修复工具函数 ==============================
+
+/**
+ * 尝试修复 UTF-8 被错误解码为 Latin-1 的情况
+ * 例如：å®�é™� 应该是 "实践"
+ */
+const tryFixUtf8AsLatin1 = (text: string): string => {
+  try {
+    const bytes = new Uint8Array(text.length);
+    for (let i = 0; i < text.length; i++) {
+      bytes[i] = text.charCodeAt(i) & 0xFF;
+    }
+    const decoder = new TextDecoder('utf-8', { fatal: false });
+    const decoded = decoder.decode(bytes);
+    
+    // 如果修复后没有乱码字符，说明修复成功
+    if (!decoded.includes('�') && decoded !== text) {
+      return decoded;
+    }
+    return text;
+  } catch {
+    return text;
+  }
+};
+
+/**
+ * 尝试修复 GBK 被错误解码为 UTF-8 的情况
+ */
+const tryFixGbkAsUtf8 = (text: string): string => {
+  try {
+    // 如果包含大量�，可能是 GBK 文件被当作 UTF-8 读取
+    if ((text.match(/�/g) || []).length > text.length * 0.1) {
+      // 使用 escape/unescape 技巧（仅适用于浏览器环境）
+      // 注意：这个方法在现代浏览器可能有兼容性问题，仅作为尝试
+      try {
+        const fixed = decodeURIComponent(escape(text));
+        if (!fixed.includes('�')) return fixed;
+      } catch {}
+    }
+    return text;
+  } catch {
+    return text;
+  }
+};
+
 const cleanContent = (text: string): string => {
   if (!text) return '';
   
   let cleaned = text;
   
-  // 1. 移除 BOM 头 (UTF-8, UTF-16 LE/BE, UTF-32 LE/BE)
+  // 1. 如果包含大量替换字符，尝试编码修复
+  const replacementCount = (cleaned.match(/�/g) || []).length;
+  if (replacementCount > 10 || cleaned.includes('��')) {
+    console.log('检测到乱码，尝试修复编码...');
+    cleaned = tryFixUtf8AsLatin1(cleaned);
+    cleaned = tryFixGbkAsUtf8(cleaned);
+  }
+  
+  // 2. 移除 BOM 头
   cleaned = cleaned.replace(/^\uFEFF|^\uFFFE|^\u0000\uFEFF|^\uFEFF\u0000|^\uFFFE\u0000|^\u0000\uFFFE/g, '');
   
-  // 2. 替换所有类型的换行符为 \n
+  // 3. 替换换行符
   cleaned = cleaned.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
   
-  // 3. 移除行尾空格和制表符
+  // 4. 移除行尾空格
   cleaned = cleaned.replace(/[ \t]+$/gm, '');
   
-  // 4. 移除控制字符（保留换行符(10)和制表符(9)）
-  // 使用数组避免正则表达式范围问题
+  // 5. 移除控制字符（保留换行(10)和制表符(9)）
   const controlChars = [
     '\x00', '\x01', '\x02', '\x03', '\x04', '\x05', '\x06', '\x07', '\x08',
     '\x0b', '\x0c', '\x0e', '\x0f', '\x10', '\x11', '\x12', '\x13', '\x14',
@@ -83,7 +134,7 @@ const cleanContent = (text: string): string => {
     cleaned = cleaned.split(char).join('');
   });
   
-  // 5. 修复常见乱码字符（使用数组避免对象重复键问题）
+  // 6. 修复常见乱码映射（使用数组避免对象重复键）
   const charReplacements: Array<[string, string]> = [
     ['â€œ', '"'], ['â€', '"'], ['â€™', "'"], ['â€˜', "'"], ['â€¦', '…'],
     ['â€"', '—'], ['â€"', '–'], ['Â ', ' '], ['Â¡', '¡'], ['Â¢', '¢'],
@@ -104,41 +155,44 @@ const cleanContent = (text: string): string => {
     ['Ã¼', 'ü'], ['Ã½', 'ý'], ['Ã¾', 'þ'], ['Ã¿', 'ÿ'],
   ];
   
-  // 注意：由于某些乱码模式可能重叠，需要谨慎处理顺序
-  // 先处理长的，再处理短的；或者使用正则表达式全局替换
   charReplacements.forEach(([bad, good]) => {
-    // 使用 split/join 而不是 replace 以避免正则表达式特殊字符问题
     cleaned = cleaned.split(bad).join(good);
   });
   
-  // 6. 移除连续多个空行（保留最多 2 个）
+  // 7. 移除连续多个空行
   cleaned = cleaned.replace(/\n{3,}/g, '\n\n');
   
-  // 7. 移除开头的空格和空行
-  cleaned = cleaned.trimStart();
-  
-  // 8. 处理零宽字符和不可见字符（再次确认）
-  cleaned = cleaned.replace(/[\u200b-\u200d\u2060\ufeff]/g, '');
-  
-  // 9. 修复全角空格过度使用
-  cleaned = cleaned.replace(/[  ]+/g, '  ');
-  
-  // 10. 确保结尾干净
+  // 8. 清理首尾
   cleaned = cleaned.trim();
   
   return cleaned;
 };
 
-// 检查是否可能是乱码（用于调试）
-const detectGarbledText = (text: string): boolean => {
-  // 检测常见的乱码模式
-  const garbledPatterns = [
-    /Ã[\x80-\xbf]/,  // UTF-8 被当作 Latin-1 解读的常见模式
-    /â€œ|â€|â€˜|â€™|â€¦/,  // 引号乱码
-    /Â[\x80-\xbf]/,  // 空格和其他字符乱码
-  ];
+// 检查是否可能是乱码
+const detectGarbledText = (text: string): { isGarbled: boolean; confidence: number } => {
+  if (!text) return { isGarbled: false, confidence: 0 };
   
-  return garbledPatterns.some(pattern => pattern.test(text));
+  const total = text.length;
+  const replacement = (text.match(/�/g) || []).length;
+  const highBytes = (text.match(/[\x80-\xFF]/g) || []).length;
+  
+  // 如果替换字符超过5%，肯定是乱码
+  if (replacement / total > 0.05) {
+    return { isGarbled: true, confidence: 1 };
+  }
+  
+  // 如果高字节字符超过30%，可能是 Latin-1 编码的 UTF-8
+  if (highBytes / total > 0.3) {
+    return { isGarbled: true, confidence: 0.7 };
+  }
+  
+  // 检测其他乱码模式
+  const garbledPatterns = /Ã[\x80-\xbf]|â€œ|â€|â€˜|â€™|â€¦/;
+  if (garbledPatterns.test(text)) {
+    return { isGarbled: true, confidence: 0.8 };
+  }
+  
+  return { isGarbled: false, confidence: 0 };
 };
 
 const parseAndFlatten = (text: string): FlattenedItem[] => {
@@ -221,11 +275,17 @@ const storage = {
 
 // ============================== 主组件 ==============================
 export const TextReader: React.FC<TextReaderProps> = ({ content, title, bookId, onClose }) => {
-  // 数据清洗，检测乱码
+  // 数据清洗和编码修复
   const cleanedContent = useMemo(() => {
     const cleaned = cleanContent(content);
-    if (detectGarbledText(cleaned)) {
-      console.warn('检测到可能的乱码文本，已尝试修复');
+    const detection = detectGarbledText(cleaned);
+    
+    if (detection.isGarbled) {
+      console.warn(`检测到乱码文本（置信度: ${detection.confidence}），已尝试自动修复`);
+      // 如果修复后仍然有大量乱码，提示用户
+      if ((cleaned.match(/�/g) || []).length > 20) {
+        console.error('文本编码损坏严重，建议检查源文件编码格式（应为 UTF-8）');
+      }
     }
     return cleaned;
   }, [content]);
@@ -239,6 +299,7 @@ export const TextReader: React.FC<TextReaderProps> = ({ content, title, bookId, 
   const [showChapters, setShowChapters] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [isReady, setIsReady] = useState(false);
+  const [encodingWarning, setEncodingWarning] = useState(false);
   
   const parentRef = useRef<HTMLDivElement>(null);
   const uiTimeoutRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
@@ -247,6 +308,17 @@ export const TextReader: React.FC<TextReaderProps> = ({ content, title, bookId, 
   
   const theme = THEMES[settings.theme] || THEMES[0];
   
+  // 检查编码问题
+  useEffect(() => {
+    const detection = detectGarbledText(cleanedContent);
+    if (detection.isGarbled && detection.confidence > 0.5) {
+      setEncodingWarning(true);
+      // 3秒后自动隐藏警告
+      const timer = setTimeout(() => setEncodingWarning(false), 5000);
+      return () => clearTimeout(timer);
+    }
+  }, [cleanedContent]);
+
   // 动态计算预估高度
   const estimateSize = useCallback((index: number): number => {
     const item = items[index];
@@ -262,13 +334,12 @@ export const TextReader: React.FC<TextReaderProps> = ({ content, title, bookId, 
     return Math.max(baseHeight, lines * baseHeight * settings.lineHeight);
   }, [settings.fontSize, settings.lineHeight, items]);
 
-  // 修复后的虚拟滚动配置
+  // 虚拟滚动配置
   const virtualizer = useVirtualizer({
     count: items.length,
     getScrollElement: () => parentRef.current,
     estimateSize,
     overscan: 3,
-    // 修复类型错误：匹配官方要求的函数签名
     measureElement: useCallback((
       element: Element,
       _entry: ResizeObserverEntry | undefined,
@@ -516,6 +587,20 @@ export const TextReader: React.FC<TextReaderProps> = ({ content, title, bookId, 
         MozOsxFontSmoothing: 'grayscale',
       }}
     >
+      {/* 编码警告提示 */}
+      {encodingWarning && (
+        <div className="absolute top-16 left-1/2 -translate-x-1/2 z-[60] bg-red-500/90 text-white px-4 py-2 rounded-full text-sm shadow-lg backdrop-blur-sm animate-in fade-in slide-in-from-top-2">
+          <span className="font-medium">⚠️ 检测到文本编码异常</span>
+          <span className="ml-2 opacity-90">请确保文件以 UTF-8 编码保存</span>
+          <button 
+            onClick={() => setEncodingWarning(false)} 
+            className="ml-3 hover:opacity-70"
+          >
+            ✕
+          </button>
+        </div>
+      )}
+      
       {/* 加载遮罩 */}
       {!isReady && (
         <div className="absolute inset-0 z-50 flex items-center justify-center" style={{ backgroundColor: theme.bg }}>
