@@ -89,12 +89,10 @@ export function PDFViewer({
   const [viewMode, setViewMode] = useState<'single' | 'thumbnails'>('single');
   const [sidebarOpen, setSidebarOpen] = useState(false);
   
-  // 视图状态
   const [viewState, setViewState] = useState<ViewState>({ scale: 1, panX: 0, panY: 0 });
   const [isPinching, setIsPinching] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
   
-  // 批注状态
   const [activeTool, setActiveTool] = useState<'select' | 'note' | 'highlight' | 'move'>('select');
   const [selectedAnnotation, setSelectedAnnotation] = useState<PDFAnnotation | null>(null);
   const [editingAnnotation, setEditingAnnotation] = useState<string | null>(null);
@@ -108,14 +106,12 @@ export function PDFViewer({
   const pageRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<HTMLDivElement>(null);
   
-  // 手势状态
   const touchStart = useRef<{ x: number; y: number; time: number; scale: number; panX: number; panY: number } | null>(null);
   const lastTouch = useRef<{ x: number; y: number } | null>(null);
   const initialPinchDistance = useRef<number>(0);
   const rafId = useRef<number | null>(null);
   const controlsTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // 初始化
   useEffect(() => {
     const checkMobile = () => {
       const mobile = window.innerWidth < 768;
@@ -137,7 +133,6 @@ export function PDFViewer({
     };
   }, [book.id, viewState.scale]);
 
-  // 控制栏自动隐藏
   const resetControlsTimer = useCallback(() => {
     if (controlsTimer.current) clearTimeout(controlsTimer.current);
     setShowControls(true);
@@ -148,7 +143,6 @@ export function PDFViewer({
     }, 3000);
   }, [isPinching, isDragging, activeTool]);
 
-  // 全屏监听
   useEffect(() => {
     const handler = () => {
       const fs = !!document.fullscreenElement;
@@ -163,7 +157,6 @@ export function PDFViewer({
     return () => document.removeEventListener('fullscreenchange', handler);
   }, [hasShownFullscreenHint, resetControlsTimer]);
 
-  // 边界限制（防止拖出太远）
   const constrainPan = useCallback((newPanX: number, newPanY: number, scale: number) => {
     if (!containerRef.current || !pageRef.current) return { x: newPanX, y: newPanY };
     
@@ -174,7 +167,6 @@ export function PDFViewer({
     const maxPanX = Math.max(0, (pageWidth - containerRect.width) / 2 + 50);
     const maxPanY = Math.max(0, (pageHeight - containerRect.height) / 2 + 50);
     
-    // 如果页面小于容器，居中显示
     if (pageWidth <= containerRect.width) {
       newPanX = 0;
     } else {
@@ -202,7 +194,6 @@ export function PDFViewer({
     const target = Math.max(1, Math.min(page, numPages));
     setPageNumber(target);
     localStorage.setItem(`pdf-progress-${book.id}`, String(target));
-    // 翻页时平滑回到中心，但保持缩放级别
     setViewState(prev => ({ ...prev, panX: 0, panY: 0 }));
   }, [numPages, book.id]);
 
@@ -223,12 +214,10 @@ export function PDFViewer({
     }
   }, []);
 
-  // 核心：触摸手势处理（优化版）
   const onTouchStart = (e: React.TouchEvent) => {
     resetControlsTimer();
     
     if (e.touches.length === 2) {
-      // 双指缩放开始
       setIsPinching(true);
       const dx = e.touches[0].pageX - e.touches[1].pageX;
       const dy = e.touches[0].pageY - e.touches[1].pageY;
@@ -243,7 +232,6 @@ export function PDFViewer({
         panY: viewState.panY
       };
     } else if (e.touches.length === 1) {
-      // 单指：准备拖动或点击
       const touch = e.touches[0];
       touchStart.current = {
         x: touch.clientX,
@@ -255,10 +243,8 @@ export function PDFViewer({
       };
       lastTouch.current = { x: touch.clientX, y: touch.clientY };
       
-      // 批注模式：记录位置
       if (activeTool === 'note' && pageRef.current) {
         const rect = pageRef.current.getBoundingClientRect();
-        // 考虑当前的pan和scale计算相对位置
         const relativeX = (touch.clientX - rect.left - viewState.panX) / (rect.width * viewState.scale);
         const relativeY = (touch.clientY - rect.top - viewState.panY) / (rect.height * viewState.scale);
         
@@ -270,13 +256,11 @@ export function PDFViewer({
   };
 
   const onTouchMove = (e: React.TouchEvent) => {
-    // 阻止默认滚动行为
-    if (e.touches.length > 1 || isDragging) {
+    if (e.touches.length > 1) {
       e.preventDefault();
     }
     
     if (e.touches.length === 2 && touchStart.current) {
-      // 双指缩放
       const dx = e.touches[0].pageX - e.touches[1].pageX;
       const dy = e.touches[0].pageY - e.touches[1].pageY;
       const distance = Math.hypot(dx, dy);
@@ -284,7 +268,6 @@ export function PDFViewer({
       
       const newScale = Math.max(0.5, Math.min(5, touchStart.current.scale * scaleFactor));
       
-      // 以双指中心为焦点缩放
       const centerX = (e.touches[0].pageX + e.touches[1].pageX) / 2;
       const centerY = (e.touches[0].pageY + e.touches[1].pageY) / 2;
       
@@ -301,13 +284,11 @@ export function PDFViewer({
         });
       });
     } else if (e.touches.length === 1 && touchStart.current && lastTouch.current) {
-      // 单指拖动（只要不是批注模式就允许拖动查看）
       if (activeTool !== 'note' && activeTool !== 'highlight') {
         const touch = e.touches[0];
         const dx = touch.clientX - lastTouch.current.x;
         const dy = touch.clientY - lastTouch.current.y;
         
-        // 移动超过5px才算拖动，否则可能是点击
         if (Math.abs(touch.clientX - touchStart.current.x) > 5 || 
             Math.abs(touch.clientY - touchStart.current.y) > 5) {
           setIsDragging(true);
@@ -334,7 +315,6 @@ export function PDFViewer({
 
   const onTouchEnd = (e: React.TouchEvent) => {
     if (e.touches.length === 0) {
-      // 所有手指离开
       const wasPinching = isPinching;
       const wasDragging = isDragging;
       const startInfo = touchStart.current;
@@ -342,58 +322,69 @@ export function PDFViewer({
       setIsPinching(false);
       setIsDragging(false);
       
-      // 检测点击（用于批注或翻页）
-      if (startInfo && !wasPinching && !wasDragging) {
+      if (activeTool === 'highlight') {
+        setTimeout(() => {
+          handleTextSelection();
+        }, 50);
+        touchStart.current = null;
+        lastTouch.current = null;
+        return;
+      }
+      
+      if (activeTool === 'note' && startInfo && !wasPinching && !wasDragging) {
         const dt = Date.now() - startInfo.time;
         const target = e.changedTouches[0];
         const dx = Math.abs(target.clientX - startInfo.x);
         const dy = Math.abs(target.clientY - startInfo.y);
         
-        // 轻触（小于300ms且移动小于10px）
-        if (dt < 300 && dx < 10 && dy < 10) {
-          if (activeTool === 'note' && tempNote) {
-            // 确认批注位置
-            setActiveTool('select');
-          } else if (!activeTool || activeTool === 'select') {
-            // 判断点击区域：左侧上一页，右侧下一页（可选功能）
+        if (dt < 300 && dx < 10 && dy < 10 && tempNote) {
+          setActiveTool('select');
+        }
+      }
+      
+      if (!activeTool || activeTool === 'select' || activeTool === 'move') {
+        if (startInfo && !wasPinching && !wasDragging) {
+          const dt = Date.now() - startInfo.time;
+          const target = e.changedTouches[0];
+          const dx = Math.abs(target.clientX - startInfo.x);
+          const dy = Math.abs(target.clientY - startInfo.y);
+          
+          if (dt < 300 && dx < 20 && dy < 20) {
+            const now = Date.now();
+            if ((window as any).lastClickTime && now - (window as any).lastClickTime < 300) {
+              e.preventDefault();
+              if (viewState.scale > 1.2) {
+                setViewState({ scale: 1, panX: 0, panY: 0 });
+              } else {
+                setViewState({ scale: 2.5, panX: 0, panY: 0 });
+              }
+              (window as any).lastClickTime = 0;
+            } else {
+              (window as any).lastClickTime = now;
+            }
+          }
+          
+          if (dt < 300 && dx < 10 && dy < 10) {
             const screenWidth = window.innerWidth;
-            if (target.clientX < screenWidth * 0.2 && pageNumber > 1) {
+            if (target.clientX < screenWidth * 0.15 && pageNumber > 1) {
               goToPrev();
-            } else if (target.clientX > screenWidth * 0.8 && pageNumber < numPages) {
+            } else if (target.clientX > screenWidth * 0.85 && pageNumber < numPages) {
               goToNext();
             }
           }
         }
         
-        // 双击检测（300ms内的第二次点击）
-        if (dt < 300 && dx < 20 && dy < 20) {
-          const now = Date.now();
-          if ((window as any).lastClickTime && now - (window as any).lastClickTime < 300) {
-            // 双击缩放
-            if (viewState.scale > 1.2) {
-              setViewState({ scale: 1, panX: 0, panY: 0 });
-            } else {
-              setViewState({ scale: 2.5, panX: 0, panY: 0 });
-            }
-            (window as any).lastClickTime = 0;
-          } else {
-            (window as any).lastClickTime = now;
+        if (!wasPinching) {
+          const constrained = constrainPan(viewState.panX, viewState.panY, viewState.scale);
+          if (constrained.x !== viewState.panX || constrained.y !== viewState.panY) {
+            setViewState(prev => ({ ...prev, panX: constrained.x, panY: constrained.y }));
           }
         }
       }
       
       touchStart.current = null;
       lastTouch.current = null;
-      
-      // 应用边界限制（橡皮筋效果）
-      if (!wasPinching) {
-        const constrained = constrainPan(viewState.panX, viewState.panY, viewState.scale);
-        if (constrained.x !== viewState.panX || constrained.y !== viewState.panY) {
-          setViewState(prev => ({ ...prev, panX: constrained.x, panY: constrained.y }));
-        }
-      }
     } else if (e.touches.length === 1 && isPinching) {
-      // 从双指变为单指，切换为拖动
       setIsPinching(false);
       const touch = e.touches[0];
       touchStart.current = {
@@ -408,7 +399,6 @@ export function PDFViewer({
     }
   };
 
-  // 鼠标滚轮缩放（桌面端）
   const onWheel = (e: React.WheelEvent) => {
     if (e.ctrlKey || e.metaKey) {
       e.preventDefault();
@@ -418,7 +408,6 @@ export function PDFViewer({
     }
   };
 
-  // 批注处理
   const handleAddNote = () => {
     if (tempNote && tempNote.content.trim()) {
       onAddAnnotation({
@@ -437,46 +426,44 @@ export function PDFViewer({
 
   const handleTextSelection = useCallback(() => {
     if (activeTool !== 'highlight') return;
-    const sel = window.getSelection();
-    if (!sel || sel.isCollapsed) return;
     
-    const text = sel.toString().trim();
-    if (!text || text.length < 2) return;
+    const sel = window.getSelection();
+    if (!sel || sel.rangeCount === 0) return;
     
     const range = sel.getRangeAt(0);
-    const rects = Array.from(range.getClientRects()).map(rect => ({
-      left: rect.left,
-      top: rect.top,
-      width: rect.width,
-      height: rect.height,
-    }));
+    const text = sel.toString().trim();
+    
+    if (!text || text.length < 1) return;
     
     const pageElement = range.startContainer.parentElement?.closest('[data-page-number]') as HTMLElement | null;
-    if (pageElement) {
-      const pageNum = parseInt(pageElement.getAttribute('data-page-number') || String(pageNumber), 10);
-      const pageRect = pageElement.getBoundingClientRect();
-      const relativeRects = rects.map(rect => ({
-        left: ((rect.left - pageRect.left) / pageRect.width) * 100,
-        top: ((rect.top - pageRect.top) / pageRect.height) * 100,
-        width: (rect.width / pageRect.width) * 100,
-        height: (rect.height / pageRect.height) * 100,
-      }));
-      
-      onAddAnnotation({
-        bookId: book.id,
-        page: pageNum,
-        type: 'highlight',
-        content: '',
-        color: '#fef08a',
-        rects: relativeRects,
-        quote: text,
-        x: 0, y: 0
-      });
-      
-      window.getSelection()?.removeAllRanges();
-      setActiveTool('select');
-      toast.success('已高亮');
-    }
+    if (!pageElement) return;
+
+    const pageNum = parseInt(pageElement.getAttribute('data-page-number') || String(pageNumber), 10);
+    const pageRect = pageElement.getBoundingClientRect();
+    
+    const rects = Array.from(range.getClientRects()).map(rect => ({
+      left: ((rect.left - pageRect.left) / pageRect.width) * 100,
+      top: ((rect.top - pageRect.top) / pageRect.height) * 100,
+      width: (rect.width / pageRect.width) * 100,
+      height: (rect.height / pageRect.height) * 100,
+    }));
+    
+    if (rects.length === 0) return;
+
+    onAddAnnotation({
+      bookId: book.id,
+      page: pageNum,
+      type: 'highlight',
+      content: '',
+      color: '#fef08a',
+      rects,
+      quote: text,
+      x: 0, y: 0
+    });
+    
+    sel.removeAllRanges();
+    setActiveTool('select');
+    toast.success('已高亮');
   }, [activeTool, pageNumber, book.id, onAddAnnotation]);
 
   const handleDelete = useCallback((id: string) => {
@@ -485,7 +472,6 @@ export function PDFViewer({
     toast.success('已删除');
   }, [onDeleteAnnotation]);
 
-  // 键盘事件
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.target instanceof HTMLTextAreaElement) {
@@ -533,6 +519,12 @@ export function PDFViewer({
   const currentAnnotations = useMemo(() => 
     annotations.filter(a => a.page === pageNumber),
   [annotations, pageNumber]);
+
+  const containerClassName = cn(
+    "flex h-full w-full overflow-hidden relative bg-background touch-manipulation",
+    isFullscreen && "fixed inset-0 z-50 bg-black",
+    activeTool !== 'highlight' && "select-none"
+  );
 
   if (viewMode === 'thumbnails') {
     return (
@@ -585,13 +577,9 @@ export function PDFViewer({
   return (
     <div 
       ref={containerRef}
-      className={cn(
-        "flex h-full w-full overflow-hidden relative bg-background touch-none select-none",
-        isFullscreen && "fixed inset-0 z-50 bg-black"
-      )}
+      className={containerClassName}
       onClick={resetControlsTimer}
     >
-      {/* 顶部控制栏 */}
       <div className={cn(
         "absolute top-0 left-0 right-0 z-40 bg-background/95 backdrop-blur-md border-b transition-transform duration-300 ease-out",
         (isFullscreen || showControls) ? "translate-y-0" : "-translate-y-full",
@@ -642,7 +630,6 @@ export function PDFViewer({
         </div>
       </div>
 
-      {/* 工具栏 */}
       <div className={cn(
         "absolute bottom-6 left-1/2 -translate-x-1/2 z-40 flex items-center gap-2 bg-background/95 backdrop-blur-md border rounded-full shadow-lg px-4 py-2 transition-all duration-300 ease-out",
         (showControls || activeTool !== 'select') ? "opacity-100 translate-y-0" : "opacity-0 translate-y-10 pointer-events-none",
@@ -695,7 +682,6 @@ export function PDFViewer({
         </Button>
       </div>
 
-      {/* 高亮模式提示 */}
       {activeTool === 'highlight' && (
         <div className="absolute top-20 left-1/2 -translate-x-1/2 z-30 bg-primary text-primary-foreground px-4 py-2 rounded-full text-sm shadow-lg flex items-center gap-2 animate-in fade-in slide-in-from-top-2">
           <span>选中文字即可高亮</span>
@@ -705,7 +691,6 @@ export function PDFViewer({
         </div>
       )}
 
-      {/* 批注提示 */}
       {activeTool === 'note' && (
         <div className="absolute top-20 left-1/2 -translate-x-1/2 z-30 bg-amber-500 text-white px-4 py-2 rounded-full text-sm shadow-lg flex items-center gap-2 animate-in fade-in slide-in-from-top-2">
           <span>点击页面添加批注便签</span>
@@ -715,13 +700,13 @@ export function PDFViewer({
         </div>
       )}
 
-      {/* PDF 内容区域 - 支持自由缩放平移 */}
       <div 
         ref={viewRef}
         className={cn(
-          "flex-1 overflow-hidden relative bg-muted/30 cursor-grab active:cursor-grabbing",
-          activeTool === 'note' && "cursor-crosshair",
-          activeTool === 'highlight' && "cursor-text",
+          "flex-1 overflow-hidden relative bg-muted/30",
+          activeTool === 'note' ? "cursor-crosshair" : 
+          activeTool === 'highlight' ? "cursor-text select-text" : 
+          "cursor-grab active:cursor-grabbing",
           isFullscreen && "bg-black"
         )}
         onTouchStart={onTouchStart}
@@ -735,7 +720,7 @@ export function PDFViewer({
           style={{
             transform: `translate3d(${viewState.panX}px, ${viewState.panY}px, 0) scale(${viewState.scale})`,
             transformOrigin: 'center center',
-            transition: isPinching || isDragging ? 'none' : 'transform 0.2s cubic-bezier(0.25, 0.46, 0.45, 0.94)'
+            transition: isPinching ? 'none' : 'transform 0.2s cubic-bezier(0.25, 0.46, 0.45, 0.94)'
           }}
         >
           <Document 
@@ -758,7 +743,6 @@ export function PDFViewer({
               onClick={(e) => {
                 if (activeTool === 'note' && !isDragging) {
                   const rect = e.currentTarget.getBoundingClientRect();
-                  // 计算相对于页面的点击位置（考虑缩放和平移）
                   const x = (e.clientX - rect.left) / rect.width;
                   const y = (e.clientY - rect.top) / rect.height;
                   setTempNote({ x, y, content: '' });
@@ -770,13 +754,16 @@ export function PDFViewer({
                 pageNumber={pageNumber}
                 scale={1.5}
                 rotate={rotation}
-                renderTextLayer={activeTool === 'highlight'} // 只有高亮模式才显示文字层
+                renderTextLayer={activeTool === 'highlight'}
                 renderAnnotationLayer={false}
                 className="shadow-2xl"
                 canvasBackground="white"
               />
               
-              {/* 渲染现有批注 */}
+              {activeTool !== 'highlight' && (
+                <div className="absolute inset-0 z-10" />
+              )}
+              
               {currentAnnotations.map(ann => {
                 if (ann.type === 'highlight' && ann.rects) {
                   return (
@@ -856,7 +843,6 @@ export function PDFViewer({
                 return null;
               })}
 
-              {/* 临时批注输入 */}
               {tempNote && (
                 <div
                   className="absolute z-30"
@@ -899,7 +885,6 @@ export function PDFViewer({
         </div>
       </div>
 
-      {/* 缩略图侧边栏 */}
       {!isMobile && sidebarOpen && (
         <div className="w-56 border-l bg-background/95 backdrop-blur-md flex flex-col shrink-0 h-full absolute right-0 top-14 bottom-0 z-30 shadow-xl">
           <div className="flex items-center justify-between p-3 border-b">
@@ -932,7 +917,6 @@ export function PDFViewer({
         </div>
       )}
 
-      {/* 移动端底部栏 */}
       {isMobile && !isFullscreen && (
         <div className="absolute bottom-0 left-0 right-0 h-16 bg-background/95 backdrop-blur-lg border-t flex items-center justify-around z-30 pb-safe">
           <button onClick={() => setViewMode('thumbnails')} className="flex flex-col items-center gap-1 text-muted-foreground active:scale-95 transition-transform">
@@ -963,7 +947,6 @@ export function PDFViewer({
         </div>
       )}
 
-      {/* 批注详情对话框 */}
       <Dialog open={!!selectedAnnotation} onOpenChange={() => setSelectedAnnotation(null)}>
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
@@ -999,7 +982,6 @@ export function PDFViewer({
         </DialogContent>
       </Dialog>
 
-      {/* 下载对话框 */}
       <Dialog open={isDownloadDialogOpen} onOpenChange={setIsDownloadDialogOpen}>
         <DialogContent>
           <DialogHeader>
