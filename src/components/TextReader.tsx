@@ -20,13 +20,15 @@ import { Button } from '@/components/ui/button';
 import { Slider } from '@/components/ui/slider';
 import { Switch } from '@/components/ui/switch';
 
-// =============== 新增：清洗函数（仅针对 txt80.com 等来源的污染文本） ===============
+// =============== 🔧 修复点1：增强文本清洗函数，避免误删有效内容 ===============
+// 原始正则可能因编码错误将中文字符识别为“符号行”而删除
+// 改进：放宽过滤条件，仅移除明显无意义的短纯符号行
 function cleanNovelContent(rawText: string): string {
   if (!rawText) return '';
 
   let text = rawText;
 
-  // 移除常见广告、水印、声明
+  // 移除常见广告、水印、声明（保持原逻辑）
   const adPatterns = [
     /本书为八零电子书网.*?存储服务/gi,
     /找好书，看好书，与大家分享好书，请加QQ群/gi,
@@ -56,12 +58,12 @@ function cleanNovelContent(rawText: string): string {
     .map(line => line.trim())
     .join('\n');
 
-  // 移除纯符号行（不含中英文且较短）
+  // ✅ 优化：仅过滤长度≤5且不含中英文的行，防止误删乱码但实际有效的段落
   text = text
     .split('\n')
     .filter(line => {
       if (line === '') return true;
-      return /[a-zA-Z\u4e00-\u9fa5]/.test(line) || line.length > 30;
+      return /[a-zA-Z\u4e00-\u9fa5]/.test(line) || line.length > 5;
     })
     .join('\n');
 
@@ -131,11 +133,12 @@ interface Chapter {
 }
 
 /**
+
  * 解析文本内容为章节结构
  */
 function parseChapters(text: string): Chapter[] {
   if (!text) return [{ title: '正文', index: 0, startLine: 0, endLine: 0, lines: [] }];
-  
+
   const allLines = text.split('\n');
   const rawChapters: { title: string; startLine: number }[] = [];
   const chapterRegex = /^(第[一二三四五六七八九十百千万零\d]+章|Chapter\s+\d+|\d+\.|【.*?】|.*?章.*?)[\s:：]/i;
@@ -173,25 +176,41 @@ function parseChapters(text: string): Chapter[] {
   return chapters;
 }
 
+/**
+
+ * ✅ 增强版读取逻辑：支持安全降级与类型校验
+ */
 function getSavedProgress(bookId: string): { chapter: number; lineInChapter: number } {
   try {
     const saved = localStorage.getItem(`reader-progress-v5-${bookId}`);
     if (saved) {
       const parsed = JSON.parse(saved);
-      return { chapter: parsed.chapter || 0, lineInChapter: parsed.lineInChapter || 0 };
+      return {
+        chapter: typeof parsed.chapter === 'number' ? Math.max(0, parsed.chapter) : 0,
+        lineInChapter: typeof parsed.lineInChapter === 'number' ? Math.max(0, parsed.lineInChapter) : 0,
+      };
     }
-  } catch {}
+  } catch (e) {
+    console.warn(`Failed to read progress for ${bookId}`, e);
+  }
   return { chapter: 0, lineInChapter: 0 };
 }
 
+/**
+
+ * ✅ 安全写入封装：捕获异常并提供 fallback
+ */
 function saveProgress(bookId: string, chapter: number, lineInChapter: number) {
   try {
     localStorage.setItem(`reader-progress-v5-${bookId}`, JSON.stringify({ chapter, lineInChapter }));
-  } catch {}
+  } catch (e) {
+    console.error(`Failed to save progress for ${bookId}`, e);
+  }
 }
 
 /**
- * 🔧 修复点 1: 强制使用默认主题（theme=0），除非用户明确更改过
+
+ * 🔧 修复点2: 强制使用默认主题（theme=0），除非用户明确更改过
  * 防止 localStorage 残留深色主题导致“一打开就是黑底”
  */
 function loadSettings(): ReaderSettings {
@@ -210,7 +229,6 @@ function loadSettings(): ReaderSettings {
     const saved = localStorage.getItem('text-reader-settings');
     if (saved) {
       const parsed = JSON.parse(saved);
-      // 如果用户从未改过主题，强制用 0（避免旧数据污染）
       if (parsed.theme === undefined || parsed.theme === null) {
         parsed.theme = 0;
       }
@@ -226,7 +244,14 @@ function saveSettings(settings: ReaderSettings) {
   } catch {}
 }
 
+/**
+
+ * 🔧 修复点3: 修正 extractLinesFromContent 边界处理，防止越界与截断乱码
+ */
 const extractLinesFromContent = (content: string, start: number, end: number): string[] => {
+  if (start >= content.length) return [];
+  if (end > content.length) end = content.length;
+
   let startPos = 0;
   if (start > 0) {
     let searchPos = start;
@@ -248,15 +273,15 @@ const extractLinesFromContent = (content: string, start: number, end: number): s
   const segment = content.substring(startPos, endPos);
   const lines = segment.split('\n');
   const skipLines = start - startPos;
-  return lines.slice(skipLines, skipLines + (end - start)).filter(line => line !== undefined);
+  const result = lines.slice(skipLines, skipLines + (end - start)).filter(line => line !== undefined);
+  return result;
 };
 
 export function TextReader({ content, title, bookId, onClose }: TextReaderProps) {
-  // =============== 新增：清洗传入的 content ===============
+  // =============== 🔧 修复点4：建议外部统一处理编码，组件内假设输入已正确解码 ===============
+  // 实际应用中应在 FileReader 或 fetch 层使用 TextDecoder 自动识别 GBK/UTF-8 等编码
   const cleanedContent = useMemo(() => cleanNovelContent(content), [content]);
-  // =====================================================
 
-  // 🔧 修复点 2: 增强空内容检测（包括纯空白字符）
   const isContentEmpty = !cleanedContent || cleanedContent.trim().length === 0;
 
   if (isContentEmpty) {
@@ -295,14 +320,13 @@ export function TextReader({ content, title, bookId, onClose }: TextReaderProps)
   const isScrolling = useRef(false);
   const scrollTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // 使用 cleanedContent 替代原 content
   const chapters = useMemo(() => parseChapters(cleanedContent), [cleanedContent]);
   const currentTheme = THEMES[settings.theme] || THEMES[0];
-  
+
   const currentChapterData = chapters[currentChapter] || chapters[0];
   const totalLinesInChapter = currentChapterData?.lines.length || 0;
   const totalChapters = chapters.length;
-  
+
   const totalLinesAll = chapters.reduce((sum, c) => sum + c.lines.length, 0);
   const linesBeforeCurrent = chapters.slice(0, currentChapter).reduce((sum, c) => sum + c.lines.length, 0);
   const globalLineIndex = linesBeforeCurrent + lineInChapter;
@@ -323,6 +347,10 @@ export function TextReader({ content, title, bookId, onClose }: TextReaderProps)
       const chapter = chapters[saved.chapter];
       const maxLine = Math.max(0, chapter.lines.length - 1);
       setLineInChapter(Math.min(saved.lineInChapter, maxLine));
+    } else if (chapters.length > 0) {
+      // ✅ 自动降级：若进度越界，则跳转至最后一章开头
+      setCurrentChapter(chapters.length - 1);
+      setLineInChapter(0);
     }
   }, [bookId, chapters.length]);
 
@@ -420,24 +448,24 @@ export function TextReader({ content, title, bookId, onClose }: TextReaderProps)
 
   const handleScroll = () => {
     if (settings.pageMode !== 'scroll') return;
-    
+
     isScrolling.current = true;
     if (scrollTimeout.current) clearTimeout(scrollTimeout.current);
-    
+
     const activeContainer = isImmersive ? immersiveContainerRef.current : normalContainerRef.current;
     if (!activeContainer) return;
-    
+
     const scrollTop = activeContainer.scrollTop;
     const containerHeight = activeContainer.clientHeight;
     const scrollCenter = scrollTop + containerHeight / 3;
-    
+
     for (let i = 0; i < chapters.length; i++) {
       const chapterEl = chapterRefs.current[i];
       if (!chapterEl) continue;
-      
+
       const chapterTop = chapterEl.offsetTop;
       const chapterBottom = chapterTop + chapterEl.offsetHeight;
-      
+
       if (scrollCenter >= chapterTop && scrollCenter < chapterBottom) {
         if (currentChapter !== i) {
           setCurrentChapter(i);
@@ -445,7 +473,7 @@ export function TextReader({ content, title, bookId, onClose }: TextReaderProps)
         break;
       }
     }
-    
+
     scrollTimeout.current = setTimeout(() => {
       isScrolling.current = false;
     }, 150);
@@ -487,16 +515,16 @@ export function TextReader({ content, title, bookId, onClose }: TextReaderProps)
 
   const goToChapter = (index: number) => {
     if (index < 0 || index >= chapters.length) return;
-  
+
     setCurrentChapter(index);
     setLineInChapter(0);
     setShowChapters(false);
-  
+
     requestAnimationFrame(() => {
       const activeContainer = isImmersive 
         ? immersiveContainerRef.current 
         : normalContainerRef.current;
-    
+
       if (!activeContainer) return;
 
       if (settings.pageMode === 'page') {
@@ -516,13 +544,13 @@ export function TextReader({ content, title, bookId, onClose }: TextReaderProps)
   const toggleImmersive = () => {
     const newImmersive = !isImmersive;
     const currentContainer = newImmersive ? normalContainerRef.current : immersiveContainerRef.current;
-    
+
     if (currentContainer) {
       savedScrollPosition.current = currentContainer.scrollTop;
     }
-    
+
     setIsImmersive(newImmersive);
-    
+
     if (newImmersive) {
       setShowHeader(false);
       if (!document.fullscreenElement) {
@@ -566,7 +594,7 @@ export function TextReader({ content, title, bookId, onClose }: TextReaderProps)
   const onTouchEnd = (e: React.TouchEvent) => {
     const deltaX = touchStartX.current - e.changedTouches[0].clientX;
     const deltaY = touchStartY.current - e.changedTouches[0].clientY;
-    
+
     if (Math.abs(deltaX) > Math.abs(deltaY) && Math.abs(deltaX) > 50) {
       if (deltaX > 0) goToNext();
       else goToPrev();
@@ -575,12 +603,12 @@ export function TextReader({ content, title, bookId, onClose }: TextReaderProps)
 
   const onContentClick = (e: React.MouseEvent) => {
     if (settings.pageMode === 'scroll' && !isImmersive) return;
-    
+
     const activeContainer = isImmersive ? immersiveContainerRef.current : normalContainerRef.current;
     const rect = activeContainer?.getBoundingClientRect();
     if (!rect) return;
     const x = e.clientX - rect.left;
-    
+
     if (x < rect.width * 0.25) goToPrev();
     else if (x > rect.width * 0.75) goToNext();
   };
@@ -599,7 +627,7 @@ export function TextReader({ content, title, bookId, onClose }: TextReaderProps)
       chapter.endLine + 1
     );
 
-    const displayLines = extractLinesFromContent(cleanedContent, startGlobalLine, endGlobalLine); // 使用 cleanedContent
+    const displayLines = extractLinesFromContent(cleanedContent, startGlobalLine, endGlobalLine);
 
     return (
       <div style={{ 
@@ -703,7 +731,7 @@ export function TextReader({ content, title, bookId, onClose }: TextReaderProps)
         <div className="absolute bottom-6 left-6 z-10 text-xs opacity-50" style={{ color: currentTheme.text }}>
           {currentTime}
         </div>
-        
+
         <button
           onClick={() => setShowChapters(true)}
           className="absolute top-4 left-4 z-10 h-9 px-4 rounded-full text-sm font-medium transition-all duration-200 hover:scale-105 flex items-center gap-2"
@@ -725,7 +753,7 @@ export function TextReader({ content, title, bookId, onClose }: TextReaderProps)
           >
             <ChevronUp className="h-5 w-5" />
           </button>
-          
+
           <button
             onClick={() => currentChapter < chapters.length - 1 && goToChapter(currentChapter + 1)}
             disabled={currentChapter >= chapters.length - 1}
@@ -737,7 +765,7 @@ export function TextReader({ content, title, bookId, onClose }: TextReaderProps)
           >
             <ChevronDown className="h-5 w-5" />
           </button>
-          
+
           <button
             onClick={toggleImmersive}
             className="w-9 h-9 rounded-full flex items-center justify-center text-sm font-medium transition-all duration-200 hover:scale-110 ml-1"
@@ -886,7 +914,7 @@ export function TextReader({ content, title, bookId, onClose }: TextReaderProps)
                 <X className="h-4 w-4" />
               </button>
             </div>
-            
+
             <div className="p-4 space-y-5">
               <div className="space-y-2">
                 <div className="flex items-center justify-between">
