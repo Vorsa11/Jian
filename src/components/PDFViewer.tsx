@@ -4,7 +4,7 @@ import {
   ChevronLeft, ChevronRight, Search, RotateCw, ZoomIn, ZoomOut, 
   Maximize2, Minimize2, Download, MessageSquare, AlertCircle,
   Highlighter, X, LayoutList, Grid3X3, ScrollText, 
-  PanelLeft, PanelRight, FileX
+  PanelLeft, PanelRight, FileX, RefreshCw
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -14,31 +14,33 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/comp
 import { cn } from '@/lib/utils';
 import { toast } from 'sonner';
 
-// ==================== 关键修复：Worker 配置 ====================
-// 方案1：使用 CDN（确保版本匹配）
-const pdfjsVersion = pdfjs.version;
-console.log('PDF.js Version:', pdfjsVersion);
+// ==================== Worker 配置 ====================
+const PDFJS_VERSION = pdfjs.version;
+console.log('PDF.js Version:', PDFJS_VERSION);
 
-// 尝试多个 worker 源，防止某个 CDN 失效
-const workerSources = [
-  `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsVersion}/pdf.worker.min.js`,
-  `https://unpkg.com/pdfjs-dist@${pdfjsVersion}/build/pdf.worker.min.js`,
-  `/pdf.worker.min.js` // 本地备选
+const WORKER_URLS = [
+  '/pdf.worker.min.mjs',
+  '/pdf.worker.mjs',
+  `https://unpkg.com/pdfjs-dist@${PDFJS_VERSION}/build/pdf.worker.min.mjs`,
+  `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${PDFJS_VERSION}/pdf.worker.min.mjs`
 ];
 
-const loadWorker = async () => {
-  for (const src of workerSources) {
+const setupWorker = async () => {
+  for (const url of WORKER_URLS) {
     try {
-      pdfjs.GlobalWorkerOptions.workerSrc = src;
-      console.log('PDF Worker loaded from:', src);
-      return;
+      await fetch(url, { method: 'HEAD', mode: 'no-cors' });
+      pdfjs.GlobalWorkerOptions.workerSrc = url;
+      console.log('✅ PDF Worker 加载成功:', url);
+      return true;
     } catch (e) {
-      console.warn('Failed to load worker from:', src);
+      console.warn('❌ Worker 加载失败:', url);
     }
   }
+  console.warn('⚠️ 所有 Worker 源都失败，将使用 Fake Worker（性能受限）');
+  return false;
 };
 
-loadWorker();
+setupWorker();
 
 // ==================== 类型定义 ====================
 type AnnotationType = 'note' | 'highlight' | 'text';
@@ -116,9 +118,7 @@ export function PDFViewer({
   const [isSidebarOpen, setIsSidebarOpen] = useLocalStorage('pdf-sidebar-open', true);
   const [isFullscreen, setIsFullscreen] = useState(false);
   
-  // 错误状态
   const [loadError, setLoadError] = useState<Error | null>(null);
-  const [isLoading, setIsLoading] = useState(true);
   
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState<Array<{ page: number; matchIndex: number }>>([]);
@@ -132,15 +132,12 @@ export function PDFViewer({
   const scrollRef = useRef<HTMLDivElement>(null);
   const searchTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // 验证 fileUrl
   useEffect(() => {
     console.log('PDF Viewer mounted with fileUrl:', fileUrl);
     if (!fileUrl) {
       setLoadError(new Error('未提供文件路径'));
-      setIsLoading(false);
     } else {
       setLoadError(null);
-      setIsLoading(true);
     }
   }, [fileUrl]);
 
@@ -148,7 +145,6 @@ export function PDFViewer({
     console.log('PDF loaded successfully, pages:', numPages);
     setNumPages(numPages);
     setLoadError(null);
-    setIsLoading(false);
     const savedPage = localStorage.getItem(`pdf-progress-${book.id}`);
     if (savedPage) setPageNumber(parseInt(savedPage));
   }, [book.id]);
@@ -156,7 +152,6 @@ export function PDFViewer({
   const onDocumentLoadError = useCallback((error: Error) => {
     console.error('PDF load error:', error);
     setLoadError(error);
-    setIsLoading(false);
     toast.error(`PDF加载失败: ${error.message}`);
   }, []);
 
@@ -399,21 +394,22 @@ export function PDFViewer({
     );
   }, [pageNumber, scale, rotation, viewMode, annotations]);
 
-  // ==================== 错误提示组件 ====================
   const ErrorDisplay = () => {
     if (!loadError) return null;
     
     let errorMessage = loadError.message;
     let helpText = '';
+    let isWorkerError = false;
     
-    if (errorMessage.includes('worker')) {
-      helpText = 'PDF.js Worker 加载失败，请检查网络连接或尝试刷新页面';
+    if (errorMessage.includes('worker') || errorMessage.includes('Failed to fetch dynamically imported module')) {
+      helpText = 'PDF.js Worker 文件加载失败。这通常是因为网络问题或版本不匹配。';
+      isWorkerError = true;
     } else if (errorMessage.includes('404') || errorMessage.includes('Failed to fetch')) {
-      helpText = '文件路径错误或文件不存在，请检查 fileUrl 是否正确';
+      helpText = 'PDF 文件路径错误或无法访问。请检查文件是否存在以及 CORS 设置。';
     } else if (errorMessage.includes('CORS')) {
-      helpText = '跨域访问被阻止，请确保 PDF 文件允许跨域访问或使用本地文件';
+      helpText = '跨域访问被阻止。请将 PDF 文件放在 public 目录，或使用允许跨域的 URL。';
     } else if (errorMessage.includes('Invalid PDF')) {
-      helpText = '文件格式不正确或已损坏';
+      helpText = '文件格式不正确或已损坏。';
     }
     
     return (
@@ -432,16 +428,27 @@ export function PDFViewer({
               </div>
             )}
           </div>
+          
+          {isWorkerError && (
+            <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4 text-left space-y-2">
+              <h4 className="font-medium text-yellow-800 text-sm">修复步骤：</h4>
+              <ol className="text-xs text-yellow-700 space-y-1 list-decimal list-inside">
+                <li>打开终端，运行以下命令复制 Worker 文件：</li>
+                <code className="block bg-white p-2 rounded text-[10px] mt-1 font-mono">
+                  cp node_modules/pdfjs-dist/build/pdf.worker.min.mjs public/
+                </code>
+                <li>或手动从 <a href={`https://unpkg.com/pdfjs-dist@${PDFJS_VERSION}/build/pdf.worker.min.mjs`} target="_blank" rel="noreferrer" className="underline">这里</a> 下载</li>
+                <li>刷新页面重试</li>
+              </ol>
+            </div>
+          )}
+          
           <div className="pt-4 space-y-2">
-            <p className="text-xs text-muted-foreground">调试信息：</p>
-            <code className="block text-xs bg-muted p-2 rounded break-all">
-              URL: {fileUrl || 'undefined'}<br/>
-              Worker: {pdfjs.GlobalWorkerOptions.workerSrc || 'not set'}
-            </code>
+            <Button onClick={() => window.location.reload()} variant="outline" className="w-full">
+              <RefreshCw className="h-4 w-4 mr-2" />
+              刷新页面重试
+            </Button>
           </div>
-          <Button onClick={() => window.location.reload()} variant="outline">
-            刷新页面重试
-          </Button>
         </div>
       </div>
     );
@@ -760,7 +767,6 @@ export function PDFViewer({
             </Document>
           )}
 
-          {/* 悬浮操作提示 */}
           {activeTool !== 'select' && !loadError && (
             <div className="absolute top-4 left-1/2 -translate-x-1/2 bg-primary text-primary-foreground 
                           px-4 py-2 rounded-full text-sm shadow-lg animate-in fade-in slide-in-from-top-2">
@@ -774,7 +780,6 @@ export function PDFViewer({
             </div>
           )}
 
-          {/* 批注输入弹窗 */}
           {pendingAnnotation && selectionRect && (
             <div 
               className="fixed z-50 w-80 bg-popover rounded-lg shadow-xl border p-4 animate-in zoom-in-95"
@@ -815,7 +820,6 @@ export function PDFViewer({
             </div>
           )}
 
-          {/* 批注编辑侧边栏 */}
           {editingId && (
             <div className="absolute right-0 top-0 bottom-0 w-80 bg-background border-l shadow-xl animate-in slide-in-from-right">
               <div className="p-4 border-b flex items-center justify-between">
