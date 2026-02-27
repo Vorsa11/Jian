@@ -23,6 +23,10 @@ import {
   PanelLeft,
   PanelRight,
   Check,
+  ScanLine,
+  GripHorizontal,
+  Type,
+  StickyNote,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
@@ -79,6 +83,64 @@ const formatDate = (dateString: string) => {
   });
 };
 
+// 快捷批注按钮组件
+const FloatingActionButton = ({
+  isOpen,
+  onToggle,
+  onHighlight,
+  onNote,
+  activeTool,
+  isMobile
+}: {
+  isOpen: boolean;
+  onToggle: () => void;
+  onHighlight: () => void;
+  onNote: () => void;
+  activeTool: 'select' | 'note' | 'highlight';
+  isMobile: boolean;
+}) => {
+  if (!isMobile) return null;
+  
+  return (
+    <div className="fixed bottom-24 right-4 z-50 flex flex-col items-end gap-3 pointer-events-none">
+      <div 
+        className={cn(
+          "flex flex-col gap-3 transition-all duration-300 pointer-events-auto",
+          isOpen ? "opacity-100 translate-y-0" : "opacity-0 translate-y-4 pointer-events-none"
+        )}
+      >
+        <Button
+          variant={activeTool === 'highlight' ? 'default' : 'secondary'}
+          size="lg"
+          className="rounded-full shadow-xl h-14 w-14 border-2 border-background transition-transform hover:scale-110"
+          onClick={onHighlight}
+        >
+          <Highlighter className="h-6 w-6" />
+        </Button>
+        <Button
+          variant={activeTool === 'note' ? 'default' : 'secondary'}
+          size="lg"
+          className="rounded-full shadow-xl h-14 w-14 border-2 border-background transition-transform hover:scale-110"
+          onClick={onNote}
+        >
+          <StickyNote className="h-6 w-6" />
+        </Button>
+      </div>
+      <Button
+        variant="default"
+        size="lg"
+        className={cn(
+          "rounded-full shadow-2xl h-16 w-16 border-4 border-background transition-all duration-300 pointer-events-auto",
+          isOpen && "rotate-45 bg-destructive hover:bg-destructive"
+        )}
+        onClick={onToggle}
+      >
+        <Plus className="h-8 w-8" />
+      </Button>
+    </div>
+  );
+};
+
 export function PDFViewer({
   fileUrl,
   book,
@@ -120,6 +182,8 @@ export function PDFViewer({
   const [isMobile, setIsMobile] = useState(false);
   const [showToolbar, setShowToolbar] = useState(true);
   const [showFloatingTools, setShowFloatingTools] = useState(false);
+  const [fabOpen, setFabOpen] = useState(false);
+  const [immersiveMode, setImmersiveMode] = useState(false);
   const toolbarTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
   
   const containerRef = useRef<HTMLDivElement>(null);
@@ -128,7 +192,14 @@ export function PDFViewer({
   const lastTap = useRef<number>(0);
 
   useEffect(() => {
-    const checkMobile = () => setIsMobile(window.innerWidth < 768);
+    const checkMobile = () => {
+      const mobile = window.innerWidth < 768;
+      setIsMobile(mobile);
+      if (mobile) {
+        setSidebarOpen(false);
+        setScale(0.8);
+      }
+    };
     checkMobile();
     window.addEventListener('resize', checkMobile);
     
@@ -140,18 +211,35 @@ export function PDFViewer({
 
   useEffect(() => {
     const handleFullscreenChange = () => {
-      setIsFullscreen(!!document.fullscreenElement);
+      const isFs = !!document.fullscreenElement;
+      setIsFullscreen(isFs);
+      if (isFs) {
+        setImmersiveMode(true);
+        resetToolbarTimer();
+      } else {
+        setImmersiveMode(false);
+        setShowToolbar(true);
+      }
     };
     document.addEventListener('fullscreenchange', handleFullscreenChange);
     return () => document.removeEventListener('fullscreenchange', handleFullscreenChange);
   }, []);
 
+  // 沉浸模式自动隐藏工具栏
   const resetToolbarTimer = useCallback(() => {
-    if (!isMobile && !isFullscreen) return;
+    if (!immersiveMode && !isFullscreen && !isMobile) return;
+    
     setShowToolbar(true);
     if (toolbarTimeout.current) clearTimeout(toolbarTimeout.current);
-    toolbarTimeout.current = setTimeout(() => setShowToolbar(false), 4000);
-  }, [isMobile, isFullscreen]);
+    
+    // 沉浸模式下更快隐藏工具栏
+    const delay = immersiveMode ? 2000 : 4000;
+    toolbarTimeout.current = setTimeout(() => {
+      if (!fabOpen && !selectedAnnotation && !pendingNote) {
+        setShowToolbar(false);
+      }
+    }, delay);
+  }, [immersiveMode, isFullscreen, isMobile, fabOpen, selectedAnnotation, pendingNote]);
 
   const onDocumentLoadSuccess = useCallback(({ numPages }: { numPages: number }) => {
     setNumPages(numPages);
@@ -175,7 +263,11 @@ export function PDFViewer({
     localStorage.setItem(`pdf-progress-${book.id}`, String(target));
     setSelection(null);
     window.getSelection()?.removeAllRanges();
-  }, [numPages, book.id]);
+    // 移动端翻页后短暂显示工具栏
+    if (isMobile || immersiveMode) {
+      resetToolbarTimer();
+    }
+  }, [numPages, book.id, isMobile, immersiveMode, resetToolbarTimer]);
 
   const goToPrev = () => goToPage(pageNumber - 1);
   const goToNext = () => goToPage(pageNumber + 1);
@@ -203,12 +295,23 @@ export function PDFViewer({
     }
   }, []);
 
+  const toggleImmersive = useCallback(() => {
+    setImmersiveMode(prev => !prev);
+    if (!immersiveMode) {
+      resetToolbarTimer();
+      toast.success('已进入沉浸模式，点击任意处显示工具栏');
+    } else {
+      setShowToolbar(true);
+    }
+  }, [immersiveMode, resetToolbarTimer]);
+
   const handleTextSelection = useCallback(() => {
-    if (activeTool !== 'highlight') return;
+    if (activeTool !== 'highlight' && activeTool !== 'select') return;
     
     const sel = window.getSelection();
     if (!sel || sel.isCollapsed) {
       setSelection(null);
+      setShowFloatingTools(false);
       return;
     }
     
@@ -233,9 +336,11 @@ export function PDFViewer({
         rects,
         page: pageNum,
       });
+      // 自动显示浮动工具栏，如果是选择模式则提供快速高亮选项
       setShowFloatingTools(true);
+      resetToolbarTimer();
     }
-  }, [activeTool, pageNumber]);
+  }, [activeTool, pageNumber, resetToolbarTimer]);
 
   const addHighlight = useCallback((content: string = '') => {
     if (!selection) return;
@@ -269,13 +374,16 @@ export function PDFViewer({
   }, [selection, book.id, onAddAnnotation]);
 
   const handlePageClick = useCallback((e: React.MouseEvent, pageNum: number) => {
-    if (activeTool !== 'note' || !pageRef.current) return;
+    if (activeTool !== 'note') return;
     
-    const rect = pageRef.current.getBoundingClientRect();
+    const rect = pageRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    
     const x = (e.clientX - rect.left) / rect.width;
     const y = (e.clientY - rect.top) / rect.height;
     
     setPendingNote({ x, y, page: pageNum });
+    setFabOpen(false);
   }, [activeTool]);
 
   const confirmAddNote = useCallback((content: string) => {
@@ -302,6 +410,28 @@ export function PDFViewer({
     setEditingAnnotation(null);
     toast.success('批注已删除');
   }, [onDeleteAnnotation]);
+
+  // 快速笔记（不选位置，自动放在当前页中央）
+  const quickAddNote = useCallback(() => {
+    setActiveTool('note');
+    setPendingNote({
+      x: 0.5,
+      y: 0.3,
+      page: pageNumber
+    });
+    setFabOpen(false);
+  }, [pageNumber]);
+
+  // 快速高亮（如果已有选中文本则直接高亮，否则进入高亮模式）
+  const quickHighlight = useCallback(() => {
+    if (selection && selection.text) {
+      addHighlight();
+    } else {
+      setActiveTool(activeTool === 'highlight' ? 'select' : 'highlight');
+      toast.info(activeTool === 'highlight' ? '已退出高亮模式' : '请选中文本进行高亮');
+    }
+    setFabOpen(false);
+  }, [activeTool, selection, addHighlight]);
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -342,8 +472,16 @@ export function PDFViewer({
             setActiveTool(activeTool === 'note' ? 'select' : 'note');
           }
           break;
+        case 'i':
+          if (!e.ctrlKey && !e.metaKey) {
+            e.preventDefault();
+            toggleImmersive();
+          }
+          break;
         case 'Escape':
-          if (selection) {
+          if (fabOpen) {
+            setFabOpen(false);
+          } else if (selection) {
             setSelection(null);
             window.getSelection()?.removeAllRanges();
           } else if (selectedAnnotation) {
@@ -352,6 +490,9 @@ export function PDFViewer({
             setPendingNote(null);
           } else if (activeTool !== 'select') {
             setActiveTool('select');
+          } else if (immersiveMode) {
+            setImmersiveMode(false);
+            setShowToolbar(true);
           } else if (onClose) {
             onClose();
           }
@@ -361,7 +502,7 @@ export function PDFViewer({
     
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [goToNext, goToPrev, goToPage, numPages, selectedAnnotation, pendingNote, activeTool, onClose, selection]);
+  }, [goToNext, goToPrev, goToPage, numPages, selectedAnnotation, pendingNote, activeTool, onClose, selection, immersiveMode, fabOpen, toggleImmersive]);
 
   const onTouchStart = (e: React.TouchEvent) => {
     touchStart.current = { x: e.touches[0].clientX, y: e.touches[0].clientY };
@@ -369,7 +510,8 @@ export function PDFViewer({
     
     const now = Date.now();
     if (now - lastTap.current < 300) {
-      setScale(s => s > 1.5 ? 1.0 : 1.5);
+      // 双击缩放
+      setScale(s => s > 1.2 ? 1.0 : Math.min(2.0, s + 0.4));
     }
     lastTap.current = now;
   };
@@ -380,6 +522,7 @@ export function PDFViewer({
     const dx = touchStart.current.x - e.changedTouches[0].clientX;
     const dy = touchStart.current.y - e.changedTouches[0].clientY;
     
+    // 水平滑动翻页
     if (Math.abs(dx) > Math.abs(dy) && Math.abs(dx) > 50) {
       if (dx > 0) goToNext();
       else goToPrev();
@@ -387,6 +530,12 @@ export function PDFViewer({
     
     touchStart.current = null;
   };
+
+  const onMouseMove = useCallback(() => {
+    if (immersiveMode || isFullscreen) {
+      resetToolbarTimer();
+    }
+  }, [immersiveMode, isFullscreen, resetToolbarTimer]);
 
   const currentAnnotations = useMemo(() => 
     annotations.filter(a => a.page === pageNumber),
@@ -407,7 +556,7 @@ export function PDFViewer({
                 width: `${rect.width}%`,
                 height: `${rect.height}%`,
               }}
-              onClick={(e) => {
+              onClick={(e: React.MouseEvent) => {
                 e.stopPropagation();
                 setSelectedAnnotation(ann);
               }}
@@ -466,17 +615,29 @@ export function PDFViewer({
     <div 
       ref={containerRef}
       className={cn(
-        "flex h-full bg-background overflow-hidden relative",
-        isFullscreen && "fixed inset-0 z-50"
+        "flex h-full bg-background overflow-hidden relative select-none",
+        isFullscreen && "fixed inset-0 z-50 bg-black",
+        immersiveMode && !isFullscreen && "fixed inset-0 z-40"
       )}
-      onMouseMove={resetToolbarTimer}
+      onMouseMove={onMouseMove}
       onClick={resetToolbarTimer}
     >
+      {/* 沉浸模式指示器 */}
+      {immersiveMode && (
+        <div className="absolute top-2 right-2 z-50 opacity-0 hover:opacity-100 transition-opacity">
+          <Button variant="secondary" size="sm" className="bg-black/50 text-white border-0" onClick={toggleImmersive}>
+            <Minimize2 className="h-4 w-4 mr-2" />
+            退出沉浸
+          </Button>
+        </div>
+      )}
+
+      {/* 全屏退出按钮 */}
       {isFullscreen && (
         <Button
           variant="secondary"
           size="sm"
-          className="absolute top-4 right-4 z-50 shadow-lg opacity-0 hover:opacity-100 transition-opacity"
+          className="absolute top-4 right-4 z-50 shadow-lg opacity-0 hover:opacity-100 transition-opacity bg-black/50 text-white border-0"
           onClick={toggleFullscreen}
         >
           <Minimize2 className="h-4 w-4 mr-2" />
@@ -484,9 +645,11 @@ export function PDFViewer({
         </Button>
       )}
 
-      {/* 修复：移除 viewMode !== 'thumbnails' 因为前面已经 return 了 thumbnails 的情况 */}
       {!isMobile && sidebarOpen && (
-        <div className="w-60 border-r bg-muted/30 flex flex-col">
+        <div className={cn(
+          "w-60 border-r bg-muted/30 flex flex-col transition-all duration-300",
+          (immersiveMode || isFullscreen) && !showToolbar && "-ml-60"
+        )}>
           <div className="flex items-center justify-between p-3 border-b">
             <span className="font-semibold text-sm truncate pr-2">{book.title}</span>
             <Button variant="ghost" size="icon" className="h-8 w-8 shrink-0" onClick={() => setSidebarOpen(false)}>
@@ -572,11 +735,12 @@ export function PDFViewer({
       )}
 
       <div className="flex-1 flex flex-col relative">
+        {/* 顶部工具栏 */}
         <div className={cn(
-          "absolute top-4 left-1/2 -translate-x-1/2 z-40 transition-all duration-300",
-          !showToolbar && isMobile && "-translate-y-24 opacity-0"
+          "absolute top-4 left-1/2 -translate-x-1/2 z-40 transition-all duration-500",
+          !showToolbar && (isMobile || immersiveMode || isFullscreen) && "-translate-y-24 opacity-0 pointer-events-none"
         )}>
-          <div className="flex items-center gap-1 bg-background/95 backdrop-blur-md border rounded-full shadow-lg px-2 py-1.5">
+          <div className="flex items-center gap-1 bg-background/95 backdrop-blur-md border rounded-full shadow-2xl px-2 py-1.5">
             {onClose && (
               <Tooltip>
                 <TooltipTrigger asChild>
@@ -645,6 +809,20 @@ export function PDFViewer({
               <Plus className="h-4 w-4" />
             </Button>
 
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button 
+                  variant={immersiveMode ? 'default' : 'ghost'} 
+                  size="icon" 
+                  className="h-8 w-8 rounded-full hidden md:flex"
+                  onClick={toggleImmersive}
+                >
+                  <ScanLine className="h-4 w-4" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>沉浸模式 (I)</TooltipContent>
+            </Tooltip>
+
             <Sheet>
               <SheetTrigger asChild>
                 <Button variant="ghost" size="icon" className="h-8 w-8 rounded-full">
@@ -702,6 +880,7 @@ export function PDFViewer({
           </div>
         </div>
 
+        {/* 工具模式提示 */}
         {activeTool !== 'select' && (
           <div className="absolute top-20 left-1/2 -translate-x-1/2 z-30 bg-primary text-primary-foreground px-4 py-2 rounded-full text-sm shadow-lg animate-in fade-in slide-in-from-top-2 flex items-center gap-2">
             <span>{activeTool === 'highlight' ? '选中文本即可高亮标注' : '点击页面添加批注'}</span>
@@ -711,27 +890,44 @@ export function PDFViewer({
           </div>
         )}
 
-        {showFloatingTools && selection && activeTool === 'highlight' && (
-          <div 
-            className="absolute z-50 bg-popover border shadow-lg rounded-lg p-2 flex items-center gap-2 animate-in fade-in zoom-in-95"
-            style={{
-              left: Math.min(...selection.rects.map(r => r.left)) + Math.max(...selection.rects.map(r => r.width)) / 2,
-              top: Math.min(...selection.rects.map(r => r.top)) - 50,
-              transform: 'translateX(-50%)',
-            }}
-          >
-            <Button size="sm" variant="secondary" onClick={() => addHighlight()}>
-              <Highlighter className="h-4 w-4 mr-1" />
-              高亮
-            </Button>
-            <Button size="sm" variant="ghost" onClick={() => { setSelection(null); window.getSelection()?.removeAllRanges(); }}>
-              取消
-            </Button>
-          </div>
-        )}
-
+        {/* 文本选中后的浮动工具栏 */}
         <div 
-          className="flex-1 overflow-auto bg-muted/30 relative touch-pan-y select-text"
+          className={cn(
+            "absolute z-50 bg-popover border shadow-xl rounded-lg p-2 flex items-center gap-2 transition-all duration-200",
+            showFloatingTools && selection ? "opacity-100 translate-y-0" : "opacity-0 translate-y-2 pointer-events-none"
+          )}
+          style={{
+            left: selection ? Math.min(...selection.rects.map(r => r.left)) + Math.max(...selection.rects.map(r => r.width)) / 2 : 0,
+            top: selection ? Math.min(...selection.rects.map(r => r.top)) - 60 : 0,
+            transform: 'translateX(-50%)',
+          }}
+        >
+          <Button size="sm" variant="default" onClick={() => addHighlight()} className="gap-1">
+            <Highlighter className="h-4 w-4" />
+            高亮
+          </Button>
+          <Button size="sm" variant="secondary" onClick={() => {
+            setActiveTool('highlight');
+            addHighlight();
+          }} className="gap-1">
+            <Type className="h-4 w-4" />
+            高亮并备注
+          </Button>
+          <Button size="sm" variant="ghost" onClick={() => { 
+            setSelection(null); 
+            window.getSelection()?.removeAllRanges(); 
+            setShowFloatingTools(false);
+          }}>
+            取消
+          </Button>
+        </div>
+
+        {/* PDF 内容区域 */}
+        <div 
+          className={cn(
+            "flex-1 overflow-auto bg-muted/30 relative touch-pan-y select-text",
+            isFullscreen ? "bg-black" : "bg-muted/30"
+          )}
           onTouchStart={onTouchStart}
           onTouchEnd={onTouchEnd}
           onMouseUp={handleTextSelection}
@@ -783,10 +979,13 @@ export function PDFViewer({
                 <div className="min-h-full flex items-center justify-center p-4">
                   <div
                     ref={pageRef}
-                    className="relative inline-block shadow-2xl rounded-lg overflow-hidden bg-white"
+                    className={cn(
+                      "relative inline-block shadow-2xl rounded-lg overflow-hidden bg-white transition-all",
+                      activeTool === 'note' ? "cursor-crosshair" : "cursor-text"
+                    )}
                     style={{ 
-                      cursor: activeTool === 'note' ? 'crosshair' : 'text',
-                      touchAction: 'pan-y'
+                      touchAction: 'pan-y',
+                      maxWidth: '100%'
                     }}
                     onClick={(e) => handlePageClick(e, pageNumber)}
                     data-page-number={pageNumber}
@@ -806,29 +1005,31 @@ export function PDFViewer({
                     
                     {renderHighlights(pageNumber)}
                     
+                    {/* 笔记标记 */}
                     {currentAnnotations.filter(a => a.type === 'note').map(ann => {
                       if (ann.x === undefined || ann.y === undefined) return null;
                       return (
                         <button
                           key={ann.id}
-                          className="absolute w-6 h-6 -ml-3 -mt-3 rounded-full bg-amber-400 hover:bg-amber-500 flex items-center justify-center shadow-lg transition-transform hover:scale-110 z-10 border-2 border-white"
+                          className="absolute w-8 h-8 -ml-4 -mt-4 rounded-full bg-amber-400 hover:bg-amber-500 flex items-center justify-center shadow-lg transition-transform hover:scale-110 z-10 border-2 border-white animate-in zoom-in duration-200"
                           style={{ left: `${ann.x * 100}%`, top: `${ann.y * 100}%` }}
-                          onClick={(e) => {
+                          onClick={(e: React.MouseEvent) => {
                             e.stopPropagation();
                             setSelectedAnnotation(ann);
                           }}
                         >
-                          <MessageSquare className="h-3 w-3 text-amber-900" />
+                          <MessageSquare className="h-4 w-4 text-amber-900" />
                         </button>
                       );
                     })}
 
+                    {/* 待添加笔记标记 */}
                     {pendingNote?.page === pageNumber && (
                       <div
-                        className="absolute w-6 h-6 -ml-3 -mt-3 rounded-full bg-primary flex items-center justify-center shadow-lg z-20 border-2 border-white animate-bounce"
+                        className="absolute w-8 h-8 -ml-4 -mt-4 rounded-full bg-primary flex items-center justify-center shadow-lg z-20 border-2 border-white animate-bounce"
                         style={{ left: `${pendingNote.x * 100}%`, top: `${pendingNote.y * 100}%` }}
                       >
-                        <Plus className="h-3 w-3 text-primary-foreground" />
+                        <Plus className="h-4 w-4 text-primary-foreground" />
                       </div>
                     )}
                   </div>
@@ -838,6 +1039,7 @@ export function PDFViewer({
           )}
         </div>
 
+        {/* 进度条 */}
         <div className="absolute bottom-0 left-0 right-0 h-1 bg-muted z-30">
           <div 
             className="h-full bg-primary transition-all duration-300"
@@ -845,12 +1047,13 @@ export function PDFViewer({
           />
         </div>
 
+        {/* 移动端底部导航 */}
         {isMobile && (
           <div className={cn(
             "absolute bottom-6 left-4 right-4 flex items-center justify-between transition-all duration-300 z-30",
-            !showToolbar && "translate-y-20 opacity-0"
+            !showToolbar && "translate-y-20 opacity-0 pointer-events-none"
           )}>
-            <Button variant="secondary" size="icon" className="rounded-full shadow-lg h-12 w-12" onClick={goToPrev} disabled={pageNumber <= 1}>
+            <Button variant="secondary" size="icon" className="rounded-full shadow-xl h-12 w-12 bg-background/90 backdrop-blur" onClick={goToPrev} disabled={pageNumber <= 1}>
               <ChevronLeft className="h-6 w-6" />
             </Button>
             
@@ -858,7 +1061,7 @@ export function PDFViewer({
               <Button 
                 variant={activeTool === 'highlight' ? 'default' : 'secondary'} 
                 size="icon"
-                className="rounded-full shadow-lg h-12 w-12"
+                className="rounded-full shadow-xl h-12 w-12 bg-background/90 backdrop-blur"
                 onClick={() => setActiveTool(activeTool === 'highlight' ? 'select' : 'highlight')}
               >
                 <Highlighter className="h-5 w-5" />
@@ -866,29 +1069,42 @@ export function PDFViewer({
               
               <Button 
                 variant="secondary" 
-                className="rounded-full shadow-lg px-4 h-12"
+                className="rounded-full shadow-xl px-4 h-12 bg-background/90 backdrop-blur font-mono"
                 onClick={() => setSidebarOpen(true)}
               >
-                <span className="text-sm font-mono">{pageNumber}</span>
+                <span className="text-sm">{pageNumber}</span>
+                <span className="text-xs text-muted-foreground mx-1">/</span>
+                <span className="text-xs text-muted-foreground">{numPages}</span>
               </Button>
 
               <Button 
                 variant={activeTool === 'note' ? 'default' : 'secondary'} 
                 size="icon"
-                className="rounded-full shadow-lg h-12 w-12"
+                className="rounded-full shadow-xl h-12 w-12 bg-background/90 backdrop-blur"
                 onClick={() => setActiveTool(activeTool === 'note' ? 'select' : 'note')}
               >
                 <Plus className="h-5 w-5" />
               </Button>
             </div>
 
-            <Button variant="secondary" size="icon" className="rounded-full shadow-lg h-12 w-12" onClick={goToNext} disabled={pageNumber >= numPages}>
+            <Button variant="secondary" size="icon" className="rounded-full shadow-xl h-12 w-12 bg-background/90 backdrop-blur" onClick={goToNext} disabled={pageNumber >= numPages}>
               <ChevronRight className="h-6 w-6" />
             </Button>
           </div>
         )}
+
+        {/* 移动端悬浮批注按钮 */}
+        <FloatingActionButton
+          isOpen={fabOpen}
+          onToggle={() => setFabOpen(!fabOpen)}
+          onHighlight={quickHighlight}
+          onNote={quickAddNote}
+          activeTool={activeTool}
+          isMobile={isMobile}
+        />
       </div>
 
+      {/* 添加笔记对话框 */}
       <Dialog open={!!pendingNote} onOpenChange={() => setPendingNote(null)}>
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
@@ -906,7 +1122,7 @@ export function PDFViewer({
           />
           <div className="flex justify-end gap-2 mt-4">
             <Button variant="outline" onClick={() => setPendingNote(null)}>取消</Button>
-            <Button onClick={(e) => {
+            <Button onClick={(e: React.MouseEvent<HTMLButtonElement>) => {
               const textarea = e.currentTarget.parentElement?.previousElementSibling as HTMLTextAreaElement;
               confirmAddNote(textarea?.value || '');
             }}>
@@ -917,6 +1133,7 @@ export function PDFViewer({
         </DialogContent>
       </Dialog>
 
+      {/* 查看/编辑批注对话框 */}
       <Dialog open={!!selectedAnnotation} onOpenChange={() => {
         setSelectedAnnotation(null);
         setEditingAnnotation(null);
@@ -944,7 +1161,7 @@ export function PDFViewer({
                 />
                 <div className="flex gap-2 mt-4">
                   <Button variant="outline" className="flex-1" onClick={() => setEditingAnnotation(null)}>取消</Button>
-                  <Button className="flex-1" onClick={(e) => {
+                  <Button className="flex-1" onClick={(e: React.MouseEvent<HTMLButtonElement>) => {
                     const content = (e.currentTarget.parentElement?.previousElementSibling as HTMLTextAreaElement)?.value;
                     if (selectedAnnotation && content !== undefined) {
                       onUpdateAnnotation(selectedAnnotation.id, content);
@@ -980,6 +1197,7 @@ export function PDFViewer({
         </DialogContent>
       </Dialog>
 
+      {/* 下载对话框 */}
       <Dialog open={isDownloadDialogOpen} onOpenChange={setIsDownloadDialogOpen}>
         <DialogContent>
           <DialogHeader>
@@ -1016,6 +1234,7 @@ export function PDFViewer({
         </DialogContent>
       </Dialog>
 
+      {/* 移动端侧边栏 */}
       {isMobile && (
         <Sheet open={sidebarOpen} onOpenChange={setSidebarOpen}>
           <SheetContent side="left" className="w-[280px] p-0">
@@ -1053,6 +1272,16 @@ export function PDFViewer({
             </ScrollArea>
           </SheetContent>
         </Sheet>
+      )}
+
+      {/* 移动端手势提示 */}
+      {isMobile && pageNumber === 1 && (
+        <div className="absolute bottom-32 left-1/2 -translate-x-1/2 z-20 pointer-events-none opacity-50">
+          <div className="flex flex-col items-center gap-2 text-white text-xs bg-black/50 px-4 py-2 rounded-full">
+            <GripHorizontal className="h-4 w-4" />
+            <span>左右滑动翻页 · 双击缩放</span>
+          </div>
+        </div>
       )}
     </div>
   );
