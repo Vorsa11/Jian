@@ -1,62 +1,54 @@
-import { useState, useRef, useCallback, useEffect } from 'react';
+import { useState, useRef, useCallback, useEffect, useMemo } from 'react';
 import { Document, Page, pdfjs } from 'react-pdf';
-import { 
-  ChevronLeft, ChevronRight, Search, RotateCw, ZoomIn, ZoomOut, 
-  Maximize2, Minimize2, Download, MessageSquare, AlertCircle,
-  Highlighter, X, LayoutList, Grid3X3, ScrollText, 
-  PanelLeft, PanelRight, FileX, RefreshCw
+import {
+  ChevronLeft,
+  ChevronRight,
+  Plus,
+  X,
+  MessageSquare,
+  Download,
+  ZoomIn,
+  ZoomOut,
+  RotateCw,
+  FileDown,
+  Maximize2,
+  Minimize2,
+  LayoutGrid,
+  ScrollText,
+  ArrowLeft,
+  MoreVertical,
+  Highlighter,
+  Pencil,
+  Trash2,
+  PanelLeft,
+  PanelRight,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Textarea } from '@/components/ui/textarea';
+import { Checkbox } from '@/components/ui/checkbox';
 import { ScrollArea } from '@/components/ui/scroll-area';
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
+import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from '@/components/ui/sheet';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { cn } from '@/lib/utils';
 import { toast } from 'sonner';
 
-// ==================== Worker 配置 ====================
-const PDFJS_VERSION = pdfjs.version;
-console.log('PDF.js Version:', PDFJS_VERSION);
+// 保持能工作的 Worker 配置
+pdfjs.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${pdfjs.version}/build/pdf.worker.min.mjs`;
 
-const WORKER_URLS = [
-  '/pdf.worker.min.mjs',
-  '/pdf.worker.mjs',
-  `https://unpkg.com/pdfjs-dist@${PDFJS_VERSION}/build/pdf.worker.min.mjs`,
-  `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${PDFJS_VERSION}/pdf.worker.min.mjs`
-];
-
-const setupWorker = async () => {
-  for (const url of WORKER_URLS) {
-    try {
-      await fetch(url, { method: 'HEAD', mode: 'no-cors' });
-      pdfjs.GlobalWorkerOptions.workerSrc = url;
-      console.log('✅ PDF Worker 加载成功:', url);
-      return true;
-    } catch (e) {
-      console.warn('❌ Worker 加载失败:', url);
-    }
-  }
-  console.warn('⚠️ 所有 Worker 源都失败，将使用 Fake Worker（性能受限）');
-  return false;
-};
-
-setupWorker();
-
-// ==================== 类型定义 ====================
-type AnnotationType = 'note' | 'highlight' | 'text';
-
+// 扩展的批注类型（确保与后端一致）
 interface PDFAnnotation {
   id: string;
   page: number;
-  type: AnnotationType;
+  type: 'note' | 'highlight' | 'text';
   content: string;
   color: string;
   x?: number;
   y?: number;
-  rects?: Array<{ left: number; top: number; width: number; height: number }>;
   quote?: string;
   createdAt: string;
   updatedAt: string;
+  bookId?: string;
 }
 
 interface Book {
@@ -65,39 +57,26 @@ interface Book {
   author?: string;
 }
 
-type ViewMode = 'single' | 'double' | 'scroll';
-type SidebarTab = 'thumbnails' | 'outline' | 'annotations' | 'search';
-
 interface PDFViewerProps {
   fileUrl: string;
   book: Book;
   annotations: PDFAnnotation[];
   onAddAnnotation: (annotation: Omit<PDFAnnotation, 'id' | 'createdAt' | 'updatedAt'>) => void;
-  onUpdateAnnotation: (id: string, updates: Partial<PDFAnnotation>) => void;
+  onUpdateAnnotation: (id: string, content: string) => void;
   onDeleteAnnotation: (id: string) => void;
   onDownloadFile?: (includeAnnotations: boolean) => void;
+  onClose?: () => void;
 }
 
-const useLocalStorage = <T,>(key: string, initialValue: T): [T, (value: T | ((prev: T) => T)) => void] => {
-  const [value, setValue] = useState<T>(() => {
-    if (typeof window === 'undefined') return initialValue;
-    try {
-      const item = localStorage.getItem(key);
-      return item ? (JSON.parse(item) as T) : initialValue;
-    } catch {
-      return initialValue;
-    }
+// 工具函数：格式化日期
+const formatDate = (dateString: string) => {
+  const date = new Date(dateString);
+  return date.toLocaleDateString('zh-CN', {
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit'
   });
-  
-  useEffect(() => {
-    try {
-      localStorage.setItem(key, JSON.stringify(value));
-    } catch (e) {
-      console.error('localStorage error:', e);
-    }
-  }, [key, value]);
-  
-  return [value, setValue];
 };
 
 export function PDFViewer({
@@ -108,68 +87,117 @@ export function PDFViewer({
   onUpdateAnnotation,
   onDeleteAnnotation,
   onDownloadFile,
+  onClose,
 }: PDFViewerProps) {
+  // 核心状态
   const [numPages, setNumPages] = useState(0);
   const [pageNumber, setPageNumber] = useState(1);
-  const [scale, setScale] = useLocalStorage('pdf-scale', 1.2);
+  const [scale, setScale] = useState(1.2);
   const [rotation, setRotation] = useState(0);
-  const [viewMode, setViewMode] = useLocalStorage<ViewMode>('pdf-view-mode', 'single');
-  const [sidebarTab, setSidebarTab] = useLocalStorage<SidebarTab>('pdf-sidebar', 'thumbnails');
-  const [isSidebarOpen, setIsSidebarOpen] = useLocalStorage('pdf-sidebar-open', true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
+  const [isDownloadDialogOpen, setIsDownloadDialogOpen] = useState(false);
+  const [includeAnnotations, setIncludeAnnotations] = useState(true);
   
-  const [loadError, setLoadError] = useState<Error | null>(null);
+  // 视图模式：single | scroll | thumbnails
+  const [viewMode, setViewMode] = useState<'single' | 'scroll' | 'thumbnails'>('single');
   
-  const [searchQuery, setSearchQuery] = useState('');
-  const [searchResults, setSearchResults] = useState<Array<{ page: number; matchIndex: number }>>([]);
+  // 侧边栏状态
+  const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [sidebarTab, setSidebarTab] = useState<'thumbnails' | 'annotations'>('thumbnails');
   
+  // 批注状态
   const [activeTool, setActiveTool] = useState<'select' | 'note' | 'highlight'>('select');
-  const [selectionRect, setSelectionRect] = useState<DOMRect | null>(null);
-  const [pendingAnnotation, setPendingAnnotation] = useState<Partial<PDFAnnotation> | null>(null);
-  const [editingId, setEditingId] = useState<string | null>(null);
+  const [selectedAnnotation, setSelectedAnnotation] = useState<PDFAnnotation | null>(null);
+  const [editingAnnotation, setEditingAnnotation] = useState<PDFAnnotation | null>(null);
   
+  const [pendingAnnotation, setPendingAnnotation] = useState<{
+    x: number;
+    y: number;
+    page: number;
+    type: 'note' | 'highlight';
+    quote?: string;
+  } | null>(null);
+  
+  // 移动端检测
+  const [isMobile, setIsMobile] = useState(false);
+  const [showToolbar, setShowToolbar] = useState(true);
+  const toolbarTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
+  
+  // 触摸手势
+  const touchStart = useRef<{ x: number; y: number } | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
-  const scrollRef = useRef<HTMLDivElement>(null);
-  const searchTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pageRef = useRef<HTMLDivElement>(null);
 
+  // 记忆缩放级别
+  const savedScale = useRef(1.2);
+
+  // 初始化
   useEffect(() => {
-    console.log('PDF Viewer mounted with fileUrl:', fileUrl);
-    if (!fileUrl) {
-      setLoadError(new Error('未提供文件路径'));
-    } else {
-      setLoadError(null);
-    }
-  }, [fileUrl]);
+    const checkMobile = () => setIsMobile(window.innerWidth < 768);
+    checkMobile();
+    window.addEventListener('resize', checkMobile);
+    
+    // 恢复阅读进度
+    const saved = localStorage.getItem(`pdf-progress-${book.id}`);
+    if (saved) setPageNumber(parseInt(saved, 10));
+    
+    return () => window.removeEventListener('resize', checkMobile);
+  }, [book.id]);
 
+  // 自动隐藏工具栏（移动端）
+  const resetToolbarTimer = useCallback(() => {
+    if (!isMobile) return;
+    setShowToolbar(true);
+    if (toolbarTimeout.current) clearTimeout(toolbarTimeout.current);
+    toolbarTimeout.current = setTimeout(() => setShowToolbar(false), 3000);
+  }, [isMobile]);
+
+  // PDF 加载事件
   const onDocumentLoadSuccess = useCallback(({ numPages }: { numPages: number }) => {
-    console.log('PDF loaded successfully, pages:', numPages);
     setNumPages(numPages);
     setLoadError(null);
-    const savedPage = localStorage.getItem(`pdf-progress-${book.id}`);
-    if (savedPage) setPageNumber(parseInt(savedPage));
+    const saved = localStorage.getItem(`pdf-progress-${book.id}`);
+    if (saved) {
+      const page = parseInt(saved, 10);
+      if (page <= numPages) setPageNumber(page);
+    }
+    toast.success(`已加载 ${numPages} 页`);
   }, [book.id]);
 
   const onDocumentLoadError = useCallback((error: Error) => {
     console.error('PDF load error:', error);
-    setLoadError(error);
-    toast.error(`PDF加载失败: ${error.message}`);
+    setLoadError('无法加载 PDF 文件，请检查链接或网络连接');
+    toast.error('PDF 加载失败');
   }, []);
 
-  const handlePageChange = useCallback((newPage: number) => {
-    const page = Math.max(1, Math.min(newPage, numPages));
-    setPageNumber(page);
-    localStorage.setItem(`pdf-progress-${book.id}`, String(page));
+  // 页面导航
+  const goToPage = useCallback((page: number) => {
+    const target = Math.max(1, Math.min(page, numPages));
+    setPageNumber(target);
+    localStorage.setItem(`pdf-progress-${book.id}`, String(target));
   }, [numPages, book.id]);
 
-  const zoomIn = useCallback(() => setScale(s => Math.min(3, s + 0.2)), [setScale]);
-  const zoomOut = useCallback(() => setScale(s => Math.max(0.5, s - 0.2)), [setScale]);
-  const fitToWidth = useCallback(() => {
-    const containerWidth = containerRef.current?.clientWidth ?? 800;
-    const pageWidth = 612;
-    const sidebarOffset = isSidebarOpen ? 250 : 0;
-    setScale((containerWidth - sidebarOffset - 80) / pageWidth);
-  }, [isSidebarOpen, setScale]);
+  const goToPrev = () => goToPage(pageNumber - 1);
+  const goToNext = () => goToPage(pageNumber + 1);
 
+  // 缩放控制
+  const handleZoom = useCallback((delta: number) => {
+    setScale(s => {
+      const newScale = Math.max(0.5, Math.min(3, s + delta));
+      savedScale.current = newScale;
+      return newScale;
+    });
+  }, []);
+
+  const fitToWidth = useCallback(() => {
+    const containerWidth = containerRef.current?.clientWidth || 800;
+    const sidebarWidth = sidebarOpen && !isMobile ? 240 : 0;
+    const availableWidth = containerWidth - sidebarWidth - 48;
+    setScale(Math.min(availableWidth / 612, 2)); // 612 是标准 PDF 宽度
+  }, [sidebarOpen, isMobile]);
+
+  // 全屏
   const toggleFullscreen = useCallback(async () => {
     try {
       if (!document.fullscreenElement) {
@@ -179,704 +207,725 @@ export function PDFViewer({
         await document.exitFullscreen();
         setIsFullscreen(false);
       }
-    } catch (err) {
-      console.error('Fullscreen error:', err);
+    } catch {
+      toast.error('无法切换全屏模式');
     }
   }, []);
 
-  const handleSearch = useCallback(async (query: string) => {
-    if (!query || !numPages) return;
-    setSearchQuery(query);
+  // 批注操作
+  const handlePageClick = useCallback((e: React.MouseEvent, pageNum: number) => {
+    if (activeTool === 'select' || !pageRef.current) return;
     
-    try {
-      const pdf = await pdfjs.getDocument(fileUrl).promise;
-      const results: Array<{ page: number; matchIndex: number }> = [];
-      
-      for (let i = 1; i <= numPages; i++) {
-        const page = await pdf.getPage(i);
-        const textContent = await page.getTextContent();
-        const text = textContent.items.map((item: any) => item.str).join(' ');
-        
-        let index = text.toLowerCase().indexOf(query.toLowerCase());
-        let matchIndex = 0;
-        while (index !== -1) {
-          results.push({ page: i, matchIndex });
-          index = text.toLowerCase().indexOf(query.toLowerCase(), index + 1);
-          matchIndex++;
-        }
-      }
-      
-      setSearchResults(results);
-      if (results.length > 0) {
-        handlePageChange(results[0].page);
-      }
-    } catch (error) {
-      console.error('Search error:', error);
-    }
-  }, [fileUrl, numPages, handlePageChange]);
-
-  const handleTextSelection = useCallback(() => {
-    if (activeTool === 'select') return;
+    const rect = pageRef.current.getBoundingClientRect();
+    const x = (e.clientX - rect.left) / rect.width;
+    const y = (e.clientY - rect.top) / rect.height;
     
-    const selection = window.getSelection();
-    if (!selection || selection.isCollapsed) return;
-    
-    const text = selection.toString().trim();
-    if (!text) return;
-    
-    const range = selection.getRangeAt(0);
-    const rect = range.getBoundingClientRect();
-    
-    setSelectionRect(rect);
-    
-    if (activeTool === 'highlight') {
-      const pageElement = (range.startContainer as Element).closest('.react-pdf__Page');
-      if (pageElement) {
-        const pageIndex = parseInt(pageElement.getAttribute('data-page-number') || '1');
-        const pageRect = pageElement.getBoundingClientRect();
-        
-        const rects = Array.from(range.getClientRects()).map(r => ({
-          left: ((r.left - pageRect.left) / pageRect.width) * 100,
-          top: ((r.top - pageRect.top) / pageRect.height) * 100,
-          width: (r.width / pageRect.width) * 100,
-          height: (r.height / pageRect.height) * 100,
-        }));
-        
-        setPendingAnnotation({
-          type: 'highlight',
-          page: pageIndex,
-          rects,
-          quote: text,
-          color: '#fef08a',
-        });
-      }
+    if (activeTool === 'note') {
+      setPendingAnnotation({ x, y, page: pageNum, type: 'note' });
     }
   }, [activeTool]);
 
-  const confirmAnnotation = useCallback((content: string) => {
-    if (!pendingAnnotation) return;
+  const confirmAddAnnotation = useCallback((content: string) => {
+    if (!pendingAnnotation || !content.trim()) return;
     
     onAddAnnotation({
-      ...pendingAnnotation,
-      content,
+      bookId: book.id,
+      page: pendingAnnotation.page,
+      x: pendingAnnotation.x,
+      y: pendingAnnotation.y,
+      content: content.trim(),
       color: pendingAnnotation.type === 'highlight' ? '#fef08a' : '#fbbf24',
-    } as Omit<PDFAnnotation, 'id' | 'createdAt' | 'updatedAt'>);
+      type: pendingAnnotation.type,
+      quote: pendingAnnotation.quote,
+    });
     
     setPendingAnnotation(null);
-    setSelectionRect(null);
-    window.getSelection()?.removeAllRanges();
+    setActiveTool('select');
     toast.success('批注已添加');
-  }, [pendingAnnotation, onAddAnnotation]);
+  }, [pendingAnnotation, book.id, onAddAnnotation]);
 
+  const handleDelete = useCallback((id: string) => {
+    onDeleteAnnotation(id);
+    setSelectedAnnotation(null);
+    setEditingAnnotation(null);
+    toast.success('批注已删除');
+  }, [onDeleteAnnotation]);
+
+  // 键盘快捷键
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+      if (e.target instanceof HTMLTextAreaElement || e.target instanceof HTMLInputElement) {
+        if (e.key === 'Escape') (e.target as HTMLElement).blur();
+        return;
+      }
       
       switch(e.key) {
         case 'ArrowRight':
         case ' ':
         case 'PageDown':
           e.preventDefault();
-          handlePageChange(pageNumber + (viewMode === 'double' ? 2 : 1));
+          goToNext();
           break;
         case 'ArrowLeft':
         case 'PageUp':
           e.preventDefault();
-          handlePageChange(pageNumber - (viewMode === 'double' ? 2 : 1));
+          goToPrev();
           break;
         case 'Home':
           e.preventDefault();
-          handlePageChange(1);
+          goToPage(1);
           break;
         case 'End':
           e.preventDefault();
-          handlePageChange(numPages);
-          break;
-        case 'f':
-          if (e.ctrlKey || e.metaKey) {
-            e.preventDefault();
-            setSidebarTab('search');
-            setIsSidebarOpen(true);
-          }
+          goToPage(numPages);
           break;
         case 'Escape':
-          setActiveTool('select');
-          setPendingAnnotation(null);
-          setEditingId(null);
-          break;
-        case 'h':
-          e.preventDefault();
-          setActiveTool(activeTool === 'highlight' ? 'select' : 'highlight');
-          break;
-        case 'n':
-          e.preventDefault();
-          setActiveTool(activeTool === 'note' ? 'select' : 'note');
+          if (selectedAnnotation) setSelectedAnnotation(null);
+          else if (pendingAnnotation) setPendingAnnotation(null);
+          else if (activeTool !== 'select') setActiveTool('select');
+          else if (onClose) onClose();
           break;
       }
     };
     
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [pageNumber, numPages, viewMode, handlePageChange, setSidebarTab, setIsSidebarOpen, activeTool]);
+  }, [goToNext, goToPrev, goToPage, numPages, selectedAnnotation, pendingAnnotation, activeTool, onClose]);
 
-  const renderPage = useCallback((pageNum: number) => {
-    const isActive = pageNum === pageNumber || (viewMode === 'double' && pageNum === pageNumber + 1);
-    
-    return (
-      <div 
-        key={`page-${pageNum}`} 
-        className={cn(
-          "relative transition-all duration-300",
-          viewMode === 'scroll' ? "mb-4" : "",
-          !isActive && viewMode !== 'scroll' ? "opacity-50" : ""
-        )}
-        data-page-number={pageNum}
-      >
-        <Page
-          pageNumber={pageNum}
-          scale={scale}
-          rotate={rotation}
-          renderTextLayer={true}
-          renderAnnotationLayer={false}
-          className="shadow-2xl"
-          loading={
-            <div className="w-[600px] h-[800px] flex items-center justify-center bg-white">
-              <div className="animate-pulse flex flex-col items-center gap-2">
-                <div className="w-8 h-8 border-4 border-primary border-t-transparent rounded-full animate-spin" />
-                <span className="text-sm text-muted-foreground">加载中...</span>
-              </div>
-            </div>
-          }
-        />
-        
-        {annotations
-          .filter(ann => ann.page === pageNum)
-          .map(ann => (
-            <div key={ann.id}>
-              {ann.type === 'note' && ann.x !== undefined && ann.y !== undefined && (
-                <button
-                  className="absolute w-6 h-6 -ml-3 -mt-3 rounded-full bg-amber-400 hover:bg-amber-500 
-                           flex items-center justify-center shadow-lg transition-transform hover:scale-110 
-                           border-2 border-white z-20 group"
-                  style={{ left: `${ann.x * 100}%`, top: `${ann.y * 100}%` }}
-                  onClick={(e) => { e.stopPropagation(); setEditingId(ann.id); }}
-                >
-                  <MessageSquare className="h-3 w-3 text-amber-900" />
-                  <div className="absolute left-full ml-2 top-0 w-48 bg-popover text-popover-foreground 
-                                p-2 rounded-lg shadow-lg opacity-0 group-hover:opacity-100 pointer-events-none 
-                                transition-opacity text-xs z-30">
-                    {ann.content.substring(0, 50)}...
-                  </div>
-                </button>
-              )}
-              
-              {ann.type === 'highlight' && ann.rects && (
-                <div className="absolute inset-0 pointer-events-none">
-                  {ann.rects.map((rect, i) => (
-                    <div
-                      key={i}
-                      className="absolute bg-yellow-300/30 border-b-2 border-yellow-400 cursor-pointer 
-                               hover:bg-yellow-300/50 transition-colors pointer-events-auto"
-                      style={{
-                        left: `${rect.left}%`,
-                        top: `${rect.top}%`,
-                        width: `${rect.width}%`,
-                        height: `${rect.height}%`,
-                      }}
-                      onClick={() => setEditingId(ann.id)}
-                    />
-                  ))}
-                </div>
-              )}
-            </div>
-          ))}
-      </div>
-    );
-  }, [pageNumber, scale, rotation, viewMode, annotations]);
-
-  const ErrorDisplay = () => {
-    if (!loadError) return null;
-    
-    let errorMessage = loadError.message;
-    let helpText = '';
-    let isWorkerError = false;
-    
-    if (errorMessage.includes('worker') || errorMessage.includes('Failed to fetch dynamically imported module')) {
-      helpText = 'PDF.js Worker 文件加载失败。这通常是因为网络问题或版本不匹配。';
-      isWorkerError = true;
-    } else if (errorMessage.includes('404') || errorMessage.includes('Failed to fetch')) {
-      helpText = 'PDF 文件路径错误或无法访问。请检查文件是否存在以及 CORS 设置。';
-    } else if (errorMessage.includes('CORS')) {
-      helpText = '跨域访问被阻止。请将 PDF 文件放在 public 目录，或使用允许跨域的 URL。';
-    } else if (errorMessage.includes('Invalid PDF')) {
-      helpText = '文件格式不正确或已损坏。';
-    }
-    
-    return (
-      <div className="h-full flex items-center justify-center p-8">
-        <div className="max-w-md text-center space-y-4">
-          <div className="w-16 h-16 bg-destructive/10 rounded-full flex items-center justify-center mx-auto">
-            <FileX className="h-8 w-8 text-destructive" />
-          </div>
-          <div>
-            <h3 className="text-lg font-semibold text-destructive mb-2">无法加载 PDF 文件</h3>
-            <p className="text-sm text-muted-foreground mb-2">{errorMessage}</p>
-            {helpText && (
-              <div className="flex items-start gap-2 text-sm text-muted-foreground bg-muted p-3 rounded-lg text-left">
-                <AlertCircle className="h-4 w-4 mt-0.5 shrink-0" />
-                <span>{helpText}</span>
-              </div>
-            )}
-          </div>
-          
-          {isWorkerError && (
-            <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4 text-left space-y-2">
-              <h4 className="font-medium text-yellow-800 text-sm">修复步骤：</h4>
-              <ol className="text-xs text-yellow-700 space-y-1 list-decimal list-inside">
-                <li>打开终端，运行以下命令复制 Worker 文件：</li>
-                <code className="block bg-white p-2 rounded text-[10px] mt-1 font-mono">
-                  cp node_modules/pdfjs-dist/build/pdf.worker.min.mjs public/
-                </code>
-                <li>或手动从 <a href={`https://unpkg.com/pdfjs-dist@${PDFJS_VERSION}/build/pdf.worker.min.mjs`} target="_blank" rel="noreferrer" className="underline">这里</a> 下载</li>
-                <li>刷新页面重试</li>
-              </ol>
-            </div>
-          )}
-          
-          <div className="pt-4 space-y-2">
-            <Button onClick={() => window.location.reload()} variant="outline" className="w-full">
-              <RefreshCw className="h-4 w-4 mr-2" />
-              刷新页面重试
-            </Button>
-          </div>
-        </div>
-      </div>
-    );
+  // 触摸手势（移动端滑动翻页）
+  const onTouchStart = (e: React.TouchEvent) => {
+    touchStart.current = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+    resetToolbarTimer();
   };
 
-  const Toolbar = () => (
-    <div className={cn(
-      "flex items-center justify-between px-4 py-2 bg-background/95 backdrop-blur border-b",
-      "sticky top-0 z-50 transition-all duration-300",
-      isFullscreen ? "opacity-0 hover:opacity-100" : ""
-    )}>
-      <div className="flex items-center gap-3 w-[200px]">
-        <Button 
-          variant="ghost" 
-          size="icon" 
-          onClick={() => setIsSidebarOpen(!isSidebarOpen)}
-          className={cn(isSidebarOpen && "bg-accent")}
+  const onTouchEnd = (e: React.TouchEvent) => {
+    if (!touchStart.current || viewMode !== 'single') return;
+    
+    const dx = touchStart.current.x - e.changedTouches[0].clientX;
+    const dy = touchStart.current.y - e.changedTouches[0].clientY;
+    
+    if (Math.abs(dx) > Math.abs(dy) && Math.abs(dx) > 50) {
+      if (dx > 0) goToNext();
+      else goToPrev();
+    }
+    
+    touchStart.current = null;
+  };
+
+  // 当前页批注
+  const currentAnnotations = useMemo(() => 
+    annotations.filter(a => a.page === pageNumber),
+  [annotations, pageNumber]);
+
+  // 渲染缩略图
+  const renderThumbnails = () => (
+    <div className="space-y-2 p-2">
+      {Array.from({ length: numPages }, (_, i) => i + 1).map(page => (
+        <button
+          key={page}
+          onClick={() => {
+            goToPage(page);
+            if (isMobile) setSidebarOpen(false);
+          }}
+          className={cn(
+            "w-full relative aspect-[3/4] rounded-lg overflow-hidden transition-all",
+            pageNumber === page 
+              ? "ring-2 ring-primary ring-offset-1" 
+              : "hover:opacity-80 opacity-60"
+          )}
         >
-          {isSidebarOpen ? <PanelLeft className="h-4 w-4" /> : <PanelRight className="h-4 w-4" />}
-        </Button>
-        <div className="truncate">
-          <h2 className="text-sm font-semibold truncate">{book.title}</h2>
-          <p className="text-xs text-muted-foreground">{pageNumber} / {numPages}</p>
-        </div>
-      </div>
-
-      <div className="flex items-center gap-1">
-        <TooltipProvider>
-          <div className="flex items-center bg-muted rounded-lg p-1 gap-1">
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => handlePageChange(pageNumber - 1)} disabled={pageNumber <= 1 || !!loadError}>
-                  <ChevronLeft className="h-4 w-4" />
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent>上一页 (←)</TooltipContent>
-            </Tooltip>
-            
-            <Input 
-              type="number" 
-              value={pageNumber} 
-              onChange={(e) => handlePageChange(parseInt(e.target.value) || 1)}
-              className="w-16 h-8 text-center"
-              min={1} 
-              max={numPages}
-              disabled={!!loadError}
-            />
-            
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => handlePageChange(pageNumber + 1)} disabled={pageNumber >= numPages || !!loadError}>
-                  <ChevronRight className="h-4 w-4" />
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent>下一页 (→)</TooltipContent>
-            </Tooltip>
+          <Page
+            pageNumber={page}
+            scale={0.15}
+            renderTextLayer={false}
+            renderAnnotationLayer={false}
+          />
+          <div className="absolute bottom-0 inset-x-0 bg-black/60 text-white text-[10px] py-0.5 text-center">
+            {page}
           </div>
-
-          <div className="w-px h-6 bg-border mx-2" />
-
-          <div className="flex items-center bg-muted rounded-lg p-1 gap-1">
-            <Button variant="ghost" size="icon" className="h-8 w-8" onClick={zoomOut} disabled={!!loadError}>
-              <ZoomOut className="h-4 w-4" />
-            </Button>
-            <span className="text-xs w-12 text-center font-mono">{Math.round(scale * 100)}%</span>
-            <Button variant="ghost" size="icon" className="h-8 w-8" onClick={zoomIn} disabled={!!loadError}>
-              <ZoomIn className="h-4 w-4" />
-            </Button>
-            <Button variant="ghost" size="icon" className="h-8 w-8" onClick={fitToWidth} disabled={!!loadError}>
-              <Maximize2 className="h-4 w-4" />
-            </Button>
-          </div>
-
-          <div className="w-px h-6 bg-border mx-2" />
-
-          <div className="flex items-center bg-muted rounded-lg p-1">
-            <Button 
-              variant={viewMode === 'single' ? 'secondary' : 'ghost'} 
-              size="icon" 
-              className="h-8 w-8"
-              onClick={() => setViewMode('single')}
-              disabled={!!loadError}
-            >
-              <LayoutList className="h-4 w-4" />
-            </Button>
-            <Button 
-              variant={viewMode === 'double' ? 'secondary' : 'ghost'} 
-              size="icon" 
-              className="h-8 w-8"
-              onClick={() => setViewMode('double')}
-              disabled={!!loadError}
-            >
-              <Grid3X3 className="h-4 w-4" />
-            </Button>
-            <Button 
-              variant={viewMode === 'scroll' ? 'secondary' : 'ghost'} 
-              size="icon" 
-              className="h-8 w-8"
-              onClick={() => setViewMode('scroll')}
-              disabled={!!loadError}
-            >
-              <ScrollText className="h-4 w-4" />
-            </Button>
-          </div>
-        </TooltipProvider>
-      </div>
-
-      <div className="flex items-center gap-1 w-[200px] justify-end">
-        <TooltipProvider>
-          <div className="flex items-center bg-muted rounded-lg p-1 gap-1">
-            <Button 
-              variant={activeTool === 'highlight' ? 'secondary' : 'ghost'} 
-              size="icon" 
-              className="h-8 w-8"
-              onClick={() => setActiveTool(activeTool === 'highlight' ? 'select' : 'highlight')}
-              disabled={!!loadError}
-            >
-              <Highlighter className="h-4 w-4" />
-            </Button>
-            <Button 
-              variant={activeTool === 'note' ? 'secondary' : 'ghost'} 
-              size="icon" 
-              className="h-8 w-8"
-              onClick={() => setActiveTool(activeTool === 'note' ? 'select' : 'note')}
-              disabled={!!loadError}
-            >
-              <MessageSquare className="h-4 w-4" />
-            </Button>
-          </div>
-
-          <div className="w-px h-6 bg-border mx-2" />
-
-          <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => setRotation(r => (r + 90) % 360)} disabled={!!loadError}>
-            <RotateCw className="h-4 w-4" />
-          </Button>
-
-          <Button variant="ghost" size="icon" className="h-8 w-8" onClick={toggleFullscreen}>
-            {isFullscreen ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}
-          </Button>
-
-          <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => onDownloadFile?.(true)} disabled={!!loadError}>
-            <Download className="h-4 w-4" />
-          </Button>
-        </TooltipProvider>
-      </div>
+        </button>
+      ))}
     </div>
   );
 
-  const Sidebar = () => {
-    if (!isSidebarOpen) return null;
-
-    return (
-      <div className="w-[250px] border-r bg-muted/30 flex flex-col">
-        <div className="flex border-b">
-          {(['thumbnails', 'outline', 'annotations', 'search'] as const).map((tab) => (
-            <button
-              key={tab}
-              onClick={() => setSidebarTab(tab)}
-              className={cn(
-                "flex-1 py-2 text-xs font-medium transition-colors relative",
-                sidebarTab === tab ? "text-primary" : "text-muted-foreground hover:text-foreground"
-              )}
-            >
-              {tab === 'thumbnails' && '缩略图'}
-              {tab === 'outline' && '大纲'}
-              {tab === 'annotations' && '批注'}
-              {tab === 'search' && '搜索'}
-              {sidebarTab === tab && (
-                <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-primary" />
-              )}
-            </button>
-          ))}
+  // 渲染批注列表
+  const renderAnnotationList = () => (
+    <div className="space-y-3 p-3">
+      {annotations.length === 0 ? (
+        <div className="text-center text-muted-foreground py-8 text-sm">
+          <MessageSquare className="h-8 w-8 mx-auto mb-2 opacity-50" />
+          暂无批注
         </div>
+      ) : (
+        annotations.map(ann => (
+          <div
+            key={ann.id}
+            onClick={() => {
+              goToPage(ann.page);
+              setSelectedAnnotation(ann);
+              if (isMobile) setSidebarOpen(false);
+            }}
+            className={cn(
+              "p-3 rounded-lg border text-sm cursor-pointer transition-colors",
+              selectedAnnotation?.id === ann.id 
+                ? "border-primary bg-primary/5" 
+                : "border-border hover:bg-accent"
+            )}
+          >
+            <div className="flex items-center gap-2 mb-1 text-xs text-muted-foreground">
+              <span className={cn(
+                "w-2 h-2 rounded-full",
+                ann.type === 'highlight' ? "bg-yellow-400" : "bg-amber-400"
+              )} />
+              <span>第 {ann.page} 页</span>
+              <span>·</span>
+              <span>{formatDate(ann.createdAt)}</span>
+            </div>
+            <p className="line-clamp-2 text-xs">{ann.content || ann.quote || '[无文本]'}</p>
+          </div>
+        ))
+      )}
+    </div>
+  );
 
+  if (viewMode === 'thumbnails') {
+    return (
+      <div className="flex flex-col h-full bg-background">
+        <div className="flex items-center justify-between p-3 border-b bg-muted/50 sticky top-0 z-20">
+          <div className="flex items-center gap-2">
+            {onClose && (
+              <Button variant="ghost" size="icon" onClick={onClose}>
+                <ArrowLeft className="h-5 w-5" />
+              </Button>
+            )}
+            <Button variant="outline" size="sm" onClick={() => setViewMode('single')}>
+              <ScrollText className="h-4 w-4 mr-2" />
+              阅读模式
+            </Button>
+          </div>
+          <span className="font-medium text-sm truncate max-w-[200px]">{book.title}</span>
+          <span className="text-xs text-muted-foreground">{numPages} 页</span>
+        </div>
         <ScrollArea className="flex-1">
-          {sidebarTab === 'thumbnails' && !loadError && (
-            <div className="p-2 space-y-2">
-              {Array.from({ length: numPages }, (_, i) => i + 1).map((page) => (
-                <div
-                  key={page}
-                  onClick={() => handlePageChange(page)}
-                  className={cn(
-                    "cursor-pointer p-1 rounded transition-all",
-                    pageNumber === page ? "bg-primary/10 ring-1 ring-primary" : "hover:bg-accent"
-                  )}
-                >
-                  <div className="relative aspect-[3/4] bg-white shadow-sm rounded overflow-hidden">
-                    <Page
-                      pageNumber={page}
-                      scale={0.2}
-                      renderTextLayer={false}
-                      renderAnnotationLayer={false}
-                    />
-                    <div className="absolute bottom-0 left-0 right-0 bg-black/50 text-white text-center text-[10px] py-0.5">
-                      {page}
-                    </div>
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-
-          {sidebarTab === 'search' && (
-            <div className="p-3 space-y-3">
-              <div className="relative">
-                <Search className="absolute left-2 top-2.5 h-4 w-4 text-muted-foreground" />
-                <Input
-                  placeholder="搜索文档..."
-                  value={searchQuery}
-                  onChange={(e) => {
-                    setSearchQuery(e.target.value);
-                    if (searchTimeout.current) clearTimeout(searchTimeout.current);
-                    searchTimeout.current = setTimeout(() => handleSearch(e.target.value), 500);
-                  }}
-                  className="pl-8"
-                  disabled={!!loadError}
-                />
+          <div className="p-4">
+            <Document file={fileUrl} onLoadSuccess={onDocumentLoadSuccess} onLoadError={onDocumentLoadError}>
+              <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-4">
+                {renderThumbnails()}
               </div>
-              {searchResults.length > 0 && (
-                <div className="space-y-1">
-                  <div className="text-xs text-muted-foreground mb-2">
-                    找到 {searchResults.length} 个结果
-                  </div>
-                  {searchResults.slice(0, 10).map((result, idx) => (
-                    <button
-                      key={idx}
-                      onClick={() => handlePageChange(result.page)}
-                      className="w-full text-left text-xs p-2 hover:bg-accent rounded"
-                    >
-                      第 {result.page} 页 - 匹配 {result.matchIndex + 1}
-                    </button>
-                  ))}
-                </div>
-              )}
-            </div>
-          )}
-
-          {sidebarTab === 'annotations' && (
-            <div className="p-2 space-y-2">
-              {annotations.length === 0 ? (
-                <div className="text-center text-muted-foreground text-sm py-8">
-                  暂无批注
-                </div>
-              ) : (
-                annotations.map((ann) => (
-                  <div
-                    key={ann.id}
-                    onClick={() => handlePageChange(ann.page)}
-                    className={cn(
-                      "p-2 rounded cursor-pointer text-sm border",
-                      editingId === ann.id ? "border-primary bg-primary/5" : "border-transparent hover:bg-accent"
-                    )}
-                  >
-                    <div className="flex items-center gap-2 mb-1">
-                      <span className={cn(
-                        "w-2 h-2 rounded-full",
-                        ann.type === 'highlight' ? "bg-yellow-400" : "bg-amber-400"
-                      )} />
-                      <span className="text-xs text-muted-foreground">第 {ann.page} 页</span>
-                    </div>
-                    <p className="line-clamp-2 text-xs">{ann.content || ann.quote}</p>
-                  </div>
-                ))
-              )}
-            </div>
-          )}
+            </Document>
+          </div>
         </ScrollArea>
       </div>
     );
-  };
+  }
 
   return (
-    <div ref={containerRef} className="flex flex-col h-full bg-background overflow-hidden">
-      <Toolbar />
-      
-      <div className="flex flex-1 overflow-hidden">
-        <Sidebar />
-        
+    <div 
+      ref={containerRef}
+      className="flex h-full bg-background overflow-hidden relative"
+      onMouseMove={resetToolbarTimer}
+      onClick={resetToolbarTimer}
+    >
+      {/* 左侧边栏 */}
+      {!isMobile && sidebarOpen && (
+        <div className="w-60 border-r bg-muted/30 flex flex-col animate-in slide-in-from-left">
+          <div className="flex items-center justify-between p-3 border-b">
+            <span className="font-semibold text-sm">{book.title}</span>
+            <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => setSidebarOpen(false)}>
+              <PanelLeft className="h-4 w-4" />
+            </Button>
+          </div>
+          <div className="flex border-b">
+            <button
+              onClick={() => setSidebarTab('thumbnails')}
+              className={cn(
+                "flex-1 py-2 text-xs font-medium transition-colors",
+                sidebarTab === 'thumbnails' ? "bg-accent text-accent-foreground" : "hover:bg-accent/50"
+              )}
+            >
+              缩略图
+            </button>
+            <button
+              onClick={() => setSidebarTab('annotations')}
+              className={cn(
+                "flex-1 py-2 text-xs font-medium transition-colors",
+                sidebarTab === 'annotations' ? "bg-accent text-accent-foreground" : "hover:bg-accent/50"
+              )}
+            >
+              批注 ({annotations.length})
+            </button>
+          </div>
+          <ScrollArea className="flex-1">
+            <Document file={fileUrl} onLoadSuccess={onDocumentLoadSuccess} onLoadError={onDocumentLoadError}>
+              {sidebarTab === 'thumbnails' ? renderThumbnails() : renderAnnotationList()}
+            </Document>
+          </ScrollArea>
+        </div>
+      )}
+
+      {/* 主内容区 */}
+      <div className="flex-1 flex flex-col relative">
+        {/* 顶部悬浮工具栏 */}
+        <div className={cn(
+          "absolute top-4 left-1/2 -translate-x-1/2 z-40 transition-all duration-300",
+          !showToolbar && isMobile && "-translate-y-20 opacity-0 pointer-events-none"
+        )}>
+          <div className="flex items-center gap-1 bg-background/90 backdrop-blur-md border rounded-full shadow-lg px-2 py-1.5">
+            {onClose && (
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button variant="ghost" size="icon" className="h-8 w-8 rounded-full" onClick={onClose}>
+                    <ArrowLeft className="h-4 w-4" />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>退出 (Esc)</TooltipContent>
+              </Tooltip>
+            )}
+            
+            {!sidebarOpen && !isMobile && (
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button variant="ghost" size="icon" className="h-8 w-8 rounded-full" onClick={() => setSidebarOpen(true)}>
+                    <PanelRight className="h-4 w-4" />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>显示侧边栏</TooltipContent>
+              </Tooltip>
+            )}
+
+            <div className="w-px h-4 bg-border mx-1" />
+
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button variant="ghost" size="icon" className="h-8 w-8 rounded-full" onClick={goToPrev} disabled={pageNumber <= 1}>
+                  <ChevronLeft className="h-4 w-4" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>上一页</TooltipContent>
+            </Tooltip>
+
+            <div className="flex items-center px-2">
+              <input
+                type="number"
+                value={pageNumber}
+                onChange={(e) => goToPage(parseInt(e.target.value) || 1)}
+                className="w-10 text-center text-sm bg-transparent border-none focus:outline-none focus:ring-0 p-0"
+                min={1}
+                max={numPages}
+              />
+              <span className="text-sm text-muted-foreground mx-1">/</span>
+              <span className="text-sm text-muted-foreground w-6">{numPages}</span>
+            </div>
+
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button variant="ghost" size="icon" className="h-8 w-8 rounded-full" onClick={goToNext} disabled={pageNumber >= numPages}>
+                  <ChevronRight className="h-4 w-4" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>下一页</TooltipContent>
+            </Tooltip>
+
+            <div className="w-px h-4 bg-border mx-1" />
+
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button variant="ghost" size="icon" className="h-8 w-8 rounded-full" onClick={() => handleZoom(-0.2)}>
+                  <ZoomOut className="h-4 w-4" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>缩小</TooltipContent>
+            </Tooltip>
+
+            <span className="text-xs w-10 text-center font-mono">{Math.round(scale * 100)}%</span>
+
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button variant="ghost" size="icon" className="h-8 w-8 rounded-full" onClick={() => handleZoom(0.2)}>
+                  <ZoomIn className="h-4 w-4" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>放大</TooltipContent>
+            </Tooltip>
+
+            <div className="w-px h-4 bg-border mx-1 hidden sm:block" />
+
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button 
+                  variant={activeTool === 'highlight' ? 'secondary' : 'ghost'} 
+                  size="icon" 
+                  className="h-8 w-8 rounded-full hidden sm:flex"
+                  onClick={() => setActiveTool(activeTool === 'highlight' ? 'select' : 'highlight')}
+                >
+                  <Highlighter className="h-4 w-4" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>高亮</TooltipContent>
+            </Tooltip>
+
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button 
+                  variant={activeTool === 'note' ? 'secondary' : 'ghost'} 
+                  size="icon" 
+                  className="h-8 w-8 rounded-full hidden sm:flex"
+                  onClick={() => setActiveTool(activeTool === 'note' ? 'select' : 'note')}
+                >
+                  <Plus className="h-4 w-4" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>添加批注</TooltipContent>
+            </Tooltip>
+
+            {/* 更多操作菜单 */}
+            <Sheet>
+              <SheetTrigger asChild>
+                <Button variant="ghost" size="icon" className="h-8 w-8 rounded-full">
+                  <MoreVertical className="h-4 w-4" />
+                </Button>
+              </SheetTrigger>
+              <SheetContent side="bottom" className="h-auto">
+                <SheetHeader>
+                  <SheetTitle>{book.title}</SheetTitle>
+                </SheetHeader>
+                <div className="grid grid-cols-4 gap-4 mt-4">
+                  <Button variant="outline" className="flex-col h-auto py-4" onClick={() => setViewMode('thumbnails')}>
+                    <LayoutGrid className="h-5 w-5 mb-2" />
+                    <span className="text-xs">缩略图</span>
+                  </Button>
+                  <Button variant="outline" className="flex-col h-auto py-4" onClick={fitToWidth}>
+                    <Maximize2 className="h-5 w-5 mb-2" />
+                    <span className="text-xs">适应宽度</span>
+                  </Button>
+                  <Button variant="outline" className="flex-col h-auto py-4" onClick={() => setRotation(r => (r + 90) % 360)}>
+                    <RotateCw className="h-5 w-5 mb-2" />
+                    <span className="text-xs">旋转</span>
+                  </Button>
+                  <Button variant="outline" className="flex-col h-auto py-4" onClick={toggleFullscreen}>
+                    {isFullscreen ? <Minimize2 className="h-5 w-5 mb-2" /> : <Maximize2 className="h-5 w-5 mb-2" />}
+                    <span className="text-xs">{isFullscreen ? '退出全屏' : '全屏'}</span>
+                  </Button>
+                </div>
+                <div className="mt-4 pt-4 border-t">
+                  <Button variant="outline" className="w-full" onClick={() => setIsDownloadDialogOpen(true)}>
+                    <Download className="h-4 w-4 mr-2" />
+                    下载 PDF
+                  </Button>
+                </div>
+              </SheetContent>
+            </Sheet>
+          </div>
+        </div>
+
+        {/* 工具模式提示 */}
+        {activeTool !== 'select' && (
+          <div className="absolute top-20 left-1/2 -translate-x-1/2 z-30 bg-primary text-primary-foreground px-4 py-2 rounded-full text-sm shadow-lg animate-in fade-in slide-in-from-top-2 flex items-center gap-2">
+            <span>{activeTool === 'highlight' ? '选中文字以高亮' : '点击页面添加批注'}</span>
+            <button onClick={() => setActiveTool('select')} className="hover:opacity-80">
+              <X className="h-4 w-4" />
+            </button>
+          </div>
+        )}
+
+        {/* 阅读区域 */}
         <div 
-          ref={scrollRef}
-          className="flex-1 overflow-auto bg-muted/30 relative"
-          onMouseUp={handleTextSelection}
+          className="flex-1 overflow-auto bg-muted/30 relative touch-pan-y"
+          onTouchStart={onTouchStart}
+          onTouchEnd={onTouchEnd}
         >
           {loadError ? (
-            <ErrorDisplay />
+            <div className="h-full flex flex-col items-center justify-center text-muted-foreground p-8">
+              <div className="w-16 h-16 bg-destructive/10 rounded-full flex items-center justify-center mb-4">
+                <X className="h-8 w-8 text-destructive" />
+              </div>
+              <p className="text-lg font-medium mb-2">{loadError}</p>
+              <Button onClick={() => window.location.reload()} variant="outline" className="mt-4">
+                重新加载
+              </Button>
+            </div>
           ) : (
-            <Document
-              file={fileUrl}
+            <Document 
+              file={fileUrl} 
               onLoadSuccess={onDocumentLoadSuccess}
               onLoadError={onDocumentLoadError}
               loading={
                 <div className="h-full flex items-center justify-center">
                   <div className="flex flex-col items-center gap-4">
                     <div className="w-12 h-12 border-4 border-primary border-t-transparent rounded-full animate-spin" />
-                    <p className="text-muted-foreground">正在加载 PDF...</p>
-                    <p className="text-xs text-muted-foreground">{fileUrl}</p>
+                    <p className="text-sm text-muted-foreground">正在加载 PDF...</p>
                   </div>
                 </div>
               }
             >
-              <div className={cn(
-                "min-h-full p-8 transition-all duration-300",
-                viewMode === 'scroll' ? "flex flex-col items-center" : "flex items-start justify-center gap-4"
-              )}>
-                {viewMode === 'scroll' ? (
-                  Array.from({ length: numPages }, (_, i) => i + 1).map(page => renderPage(page))
-                ) : viewMode === 'double' ? (
-                  <>
-                    {renderPage(pageNumber)}
-                    {pageNumber + 1 <= numPages && renderPage(pageNumber + 1)}
-                  </>
-                ) : (
-                  renderPage(pageNumber)
-                )}
-              </div>
-            </Document>
-          )}
-
-          {activeTool !== 'select' && !loadError && (
-            <div className="absolute top-4 left-1/2 -translate-x-1/2 bg-primary text-primary-foreground 
-                          px-4 py-2 rounded-full text-sm shadow-lg animate-in fade-in slide-in-from-top-2">
-              {activeTool === 'highlight' ? '选中文字即可高亮' : '点击页面添加批注'}
-              <button 
-                onClick={() => setActiveTool('select')}
-                className="ml-2 hover:opacity-80"
-              >
-                <X className="h-3 w-3 inline" />
-              </button>
-            </div>
-          )}
-
-          {pendingAnnotation && selectionRect && (
-            <div 
-              className="fixed z-50 w-80 bg-popover rounded-lg shadow-xl border p-4 animate-in zoom-in-95"
-              style={{
-                left: Math.min(selectionRect.right + 10, window.innerWidth - 320),
-                top: Math.max(selectionRect.top - 50, 20),
-              }}
-            >
-              <h4 className="font-medium mb-2 text-sm">
-                {pendingAnnotation.type === 'highlight' ? '添加高亮批注' : '添加批注'}
-              </h4>
-              <Textarea
-                placeholder="输入批注内容..."
-                autoFocus
-                className="min-h-[80px] mb-3"
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
-                    const textarea = e.currentTarget;
-                    confirmAnnotation(textarea.value);
-                  }
-                }}
-              />
-              <div className="flex justify-end gap-2">
-                <Button size="sm" variant="ghost" onClick={() => {
-                  setPendingAnnotation(null);
-                  setSelectionRect(null);
-                  window.getSelection()?.removeAllRanges();
-                }}>
-                  取消
-                </Button>
-                <Button size="sm" onClick={(e) => {
-                  const textarea = e.currentTarget.parentElement?.previousElementSibling as HTMLTextAreaElement;
-                  confirmAnnotation(textarea.value);
-                }}>
-                  保存 (⌘+Enter)
-                </Button>
-              </div>
-            </div>
-          )}
-
-          {editingId && (
-            <div className="absolute right-0 top-0 bottom-0 w-80 bg-background border-l shadow-xl animate-in slide-in-from-right">
-              <div className="p-4 border-b flex items-center justify-between">
-                <h3 className="font-semibold">编辑批注</h3>
-                <Button variant="ghost" size="icon" onClick={() => setEditingId(null)}>
-                  <X className="h-4 w-4" />
-                </Button>
-              </div>
-              <div className="p-4">
-                {(() => {
-                  const ann = annotations.find(a => a.id === editingId);
-                  if (!ann) return null;
-                  return (
-                    <div className="space-y-4">
-                      {ann.quote && (
-                        <div className="p-3 bg-yellow-50 border-l-4 border-yellow-400 text-sm italic">
-                          "{ann.quote}"
-                        </div>
-                      )}
-                      <Textarea
-                        defaultValue={ann.content}
-                        className="min-h-[200px]"
+              {viewMode === 'scroll' ? (
+                <div className="flex flex-col items-center gap-4 py-8">
+                  {Array.from({ length: numPages }, (_, i) => i + 1).map(page => (
+                    <div key={page} className="relative">
+                      <Page
+                        pageNumber={page}
+                        scale={isMobile ? Math.min(scale, 1.0) : scale}
+                        rotate={rotation}
+                        renderTextLayer={false}
+                        renderAnnotationLayer={false}
+                        className="shadow-xl"
                       />
-                      <div className="flex gap-2">
-                        <Button 
-                          className="flex-1" 
-                          onClick={(e) => {
-                            const content = (e.currentTarget.parentElement?.previousElementSibling as HTMLTextAreaElement)?.value;
-                            if (content !== undefined) {
-                              onUpdateAnnotation(editingId, { content });
-                              setEditingId(null);
-                              toast.success('已更新');
-                            }
-                          }}
-                        >
-                          保存
-                        </Button>
-                        <Button 
-                          variant="destructive" 
-                          size="icon"
-                          onClick={() => {
-                            onDeleteAnnotation(editingId);
-                            setEditingId(null);
-                            toast.success('已删除');
-                          }}
-                        >
-                          <X className="h-4 w-4" />
-                        </Button>
+                      <div className="absolute bottom-2 right-2 bg-black/50 text-white text-xs px-2 py-1 rounded-full">
+                        {page} / {numPages}
                       </div>
                     </div>
-                  );
-                })()}
-              </div>
-            </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="min-h-full flex items-center justify-center p-4">
+                  <div
+                    ref={pageRef}
+                    className="relative inline-block shadow-2xl rounded-lg overflow-hidden bg-white transition-transform duration-200"
+                    style={{ 
+                      cursor: activeTool === 'select' ? 'grab' : 'crosshair',
+                      touchAction: activeTool === 'select' ? 'pan-y' : 'none'
+                    }}
+                    onClick={(e) => handlePageClick(e, pageNumber)}
+                  >
+                    <Page
+                      pageNumber={pageNumber}
+                      scale={isMobile ? Math.min(scale, 1.2) : scale}
+                      rotate={rotation}
+                      renderTextLayer={false}
+                      renderAnnotationLayer={false}
+                      loading={
+                        <div className="w-[300px] h-[400px] md:w-[600px] md:h-[800px] flex items-center justify-center bg-white">
+                          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary" />
+                        </div>
+                      }
+                    />
+                    
+                    {/* 批注渲染 */}
+                    {currentAnnotations.map(ann => {
+                      if (ann.x === undefined || ann.y === undefined) return null;
+                      return (
+                        <button
+                          key={ann.id}
+                          className="absolute w-6 h-6 -ml-3 -mt-3 rounded-full bg-amber-400 hover:bg-amber-500 flex items-center justify-center shadow-lg transition-transform hover:scale-110 z-10 border-2 border-white"
+                          style={{ left: `${ann.x * 100}%`, top: `${ann.y * 100}%` }}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setSelectedAnnotation(ann);
+                          }}
+                        >
+                          <MessageSquare className="h-3 w-3 text-amber-900" />
+                        </button>
+                      );
+                    })}
+
+                    {/* 待添加批注预览 */}
+                    {pendingAnnotation?.page === pageNumber && (
+                      <div
+                        className="absolute w-6 h-6 -ml-3 -mt-3 rounded-full bg-primary flex items-center justify-center shadow-lg z-20 border-2 border-white animate-bounce"
+                        style={{ left: `${pendingAnnotation.x * 100}%`, top: `${pendingAnnotation.y * 100}%` }}
+                      >
+                        <Plus className="h-3 w-3 text-primary-foreground" />
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+            </Document>
           )}
         </div>
+
+        {/* 底部进度条（移动端） */}
+        {isMobile && numPages > 0 && (
+          <div className="absolute bottom-0 left-0 right-0 h-1 bg-muted">
+            <div 
+              className="h-full bg-primary transition-all duration-300"
+              style={{ width: `${(pageNumber / numPages) * 100}%` }}
+            />
+          </div>
+        )}
+
+        {/* 移动端底部导航 */}
+        {isMobile && (
+          <div className={cn(
+            "absolute bottom-6 left-4 right-4 flex items-center justify-between transition-all duration-300",
+            !showToolbar && "translate-y-20 opacity-0"
+          )}>
+            <Button variant="secondary" size="icon" className="rounded-full shadow-lg h-12 w-12" onClick={goToPrev} disabled={pageNumber <= 1}>
+              <ChevronLeft className="h-6 w-6" />
+            </Button>
+            
+            <Button 
+              variant="secondary" 
+              className="rounded-full shadow-lg px-4"
+              onClick={() => setSidebarOpen(true)}
+            >
+              <span className="text-sm font-mono">{pageNumber} / {numPages}</span>
+            </Button>
+
+            <Button variant="secondary" size="icon" className="rounded-full shadow-lg h-12 w-12" onClick={goToNext} disabled={pageNumber >= numPages}>
+              <ChevronRight className="h-6 w-6" />
+            </Button>
+          </div>
+        )}
       </div>
+
+      {/* 批注编辑弹窗 */}
+      <Dialog open={!!pendingAnnotation} onOpenChange={() => setPendingAnnotation(null)}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>添加批注</DialogTitle>
+          </DialogHeader>
+          <Textarea
+            placeholder="输入批注内容..."
+            autoFocus
+            className="mt-4 min-h-[100px]"
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+                confirmAddAnnotation((e.target as HTMLTextAreaElement).value);
+              }
+            }}
+          />
+          <div className="flex justify-end gap-2 mt-4">
+            <Button variant="outline" onClick={() => setPendingAnnotation(null)}>取消</Button>
+            <Button onClick={(e) => {
+              const textarea = e.currentTarget.parentElement?.previousElementSibling as HTMLTextAreaElement;
+              confirmAddAnnotation(textarea?.value || '');
+            }}>
+              添加 (⌘+Enter)
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* 查看批注详情 */}
+      <Dialog open={!!selectedAnnotation} onOpenChange={() => {
+        setSelectedAnnotation(null);
+        setEditingAnnotation(null);
+      }}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <MessageSquare className="h-5 w-5" />
+              批注详情
+            </DialogTitle>
+          </DialogHeader>
+          <div className="mt-4">
+            {editingAnnotation?.id === selectedAnnotation?.id ? (
+              <>
+                <Textarea
+                  defaultValue={selectedAnnotation?.content}
+                  className="min-h-[100px]"
+                  autoFocus
+                />
+                <div className="flex gap-2 mt-4">
+                  <Button variant="outline" className="flex-1" onClick={() => setEditingAnnotation(null)}>取消</Button>
+                  <Button className="flex-1" onClick={(e) => {
+                    const content = (e.currentTarget.parentElement?.previousElementSibling as HTMLTextAreaElement)?.value;
+                    if (selectedAnnotation && content !== undefined) {
+                      onUpdateAnnotation(selectedAnnotation.id, content);
+                      setEditingAnnotation(null);
+                      setSelectedAnnotation(null);
+                      toast.success('已更新');
+                    }
+                  }}>保存</Button>
+                </div>
+              </>
+            ) : (
+              <>
+                <div className="bg-muted p-4 rounded-lg mb-4">
+                  <p className="whitespace-pre-wrap text-sm">{selectedAnnotation?.content}</p>
+                </div>
+                <div className="flex items-center justify-between text-xs text-muted-foreground mb-4">
+                  <span>第 {selectedAnnotation?.page} 页</span>
+                  <span>{selectedAnnotation?.createdAt && formatDate(selectedAnnotation.createdAt)}</span>
+                </div>
+                <div className="flex gap-2">
+                  <Button variant="outline" className="flex-1" onClick={() => selectedAnnotation && setEditingAnnotation(selectedAnnotation)}>
+                    <Pencil className="h-4 w-4 mr-2" />
+                    编辑
+                  </Button>
+                  <Button variant="destructive" className="flex-1" onClick={() => selectedAnnotation && handleDelete(selectedAnnotation.id)}>
+                    <Trash2 className="h-4 w-4 mr-2" />
+                    删除
+                  </Button>
+                </div>
+              </>
+            )}
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* 下载对话框 */}
+      <Dialog open={isDownloadDialogOpen} onOpenChange={setIsDownloadDialogOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <FileDown className="h-5 w-5" />
+              下载文件
+            </DialogTitle>
+          </DialogHeader>
+          <div className="py-4 space-y-4">
+            <p className="text-sm text-muted-foreground">
+              下载《{book.title}》的 PDF 文件
+            </p>
+            <div className="flex items-center space-x-2">
+              <Checkbox
+                id="include-annotations"
+                checked={includeAnnotations}
+                onCheckedChange={(checked) => setIncludeAnnotations(checked as boolean)}
+              />
+              <label htmlFor="include-annotations" className="text-sm font-medium">
+                同时导出批注 ({annotations.length} 条)
+              </label>
+            </div>
+          </div>
+          <div className="flex justify-end gap-2">
+            <Button variant="outline" onClick={() => setIsDownloadDialogOpen(false)}>取消</Button>
+            <Button onClick={() => {
+              onDownloadFile?.(includeAnnotations);
+              setIsDownloadDialogOpen(false);
+            }}>
+              <Download className="h-4 w-4 mr-2" />
+              确认下载
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* 移动端侧边栏 Drawer */}
+      {isMobile && (
+        <Sheet open={sidebarOpen} onOpenChange={setSidebarOpen}>
+          <SheetContent side="left" className="w-[280px] p-0">
+            <SheetHeader className="p-4 border-b">
+              <SheetTitle className="text-left">{book.title}</SheetTitle>
+            </SheetHeader>
+            <ScrollArea className="h-[calc(100vh-80px)]">
+              <Document file={fileUrl}>
+                <div className="p-4 space-y-2">
+                  {Array.from({ length: numPages }, (_, i) => i + 1).map(page => (
+                    <button
+                      key={page}
+                      onClick={() => {
+                        goToPage(page);
+                        setSidebarOpen(false);
+                      }}
+                      className={cn(
+                        "w-full flex items-center gap-3 p-2 rounded-lg transition-colors",
+                        pageNumber === page ? "bg-accent" : "hover:bg-accent/50"
+                      )}
+                    >
+                      <div className="w-12 h-16 bg-white rounded border overflow-hidden relative shrink-0">
+                        <Page pageNumber={page} scale={0.1} renderTextLayer={false} renderAnnotationLayer={false} />
+                      </div>
+                      <span className="text-sm">第 {page} 页</span>
+                    </button>
+                  ))}
+                </div>
+              </Document>
+            </ScrollArea>
+          </SheetContent>
+        </Sheet>
+      )}
     </div>
   );
 }
