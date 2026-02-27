@@ -27,12 +27,12 @@ interface ReaderSettings {
 }
 
 interface TextReaderProps {
-  content?: string;        // 如果传入字符串，可能是乱码，会尝试自动修复
-  rawBuffer?: ArrayBuffer; // 推荐：传入原始二进制数据，编码检测最准确
+  content?: string;
+  rawBuffer?: ArrayBuffer;
   title: string;
   bookId: string;
   onClose: () => void;
-  encoding?: 'auto' | 'utf-8' | 'gbk' | 'gb2312'; // 强制指定编码
+  encoding?: 'auto' | 'utf-8' | 'gbk' | 'gb2312';
 }
 
 // ============================== 配置 ==============================
@@ -53,14 +53,9 @@ const THEMES = [
 ];
 
 // ============================== 编码处理工具 ==============================
-
-/**
- * 从 ArrayBuffer 解码文本，支持强制指定编码
- */
 const decodeBuffer = (buffer: ArrayBuffer, encoding?: string): string => {
   const bytes = new Uint8Array(buffer);
   
-  // 如果强制指定了编码
   if (encoding && encoding !== 'auto') {
     try {
       const decoder = new TextDecoder(encoding, { fatal: false });
@@ -70,7 +65,6 @@ const decodeBuffer = (buffer: ArrayBuffer, encoding?: string): string => {
     }
   }
   
-  // 1. 检测 BOM
   if (bytes.length >= 3 && bytes[0] === 0xEF && bytes[1] === 0xBB && bytes[2] === 0xBF) {
     return new TextDecoder('utf-8').decode(bytes.slice(3));
   }
@@ -78,53 +72,35 @@ const decodeBuffer = (buffer: ArrayBuffer, encoding?: string): string => {
     return new TextDecoder('utf-16le').decode(bytes.slice(2));
   }
   
-  // 2. 尝试 UTF-8
   try {
     const utf8Decoder = new TextDecoder('utf-8', { fatal: true });
     const text = utf8Decoder.decode(bytes);
-    // 检查是否有乱码特征
     if (!/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/.test(text)) {
       return text;
     }
-  } catch {
-    // 不是 UTF-8
-  }
+  } catch {}
   
-  // 3. 尝试 GB18030 (兼容 GB2312/GBK)
   try {
     const gbDecoder = new TextDecoder('gb18030', { fatal: false });
     return gbDecoder.decode(bytes);
-  } catch {
-    // 浏览器不支持 gb18030
-  }
+  } catch {}
   
-  // 4. 回退到 UTF-8 (非致命)
   return new TextDecoder('utf-8', { fatal: false }).decode(bytes);
 };
 
-/**
- * 尝试修复已经被错误解码为 UTF-8 的 GBK 文本
- * 原理：将乱码字符转回字节（Latin1 编码），再用 GBK 解码
- */
 const tryRecoverGbkFromMojibake = (text: string): string => {
   try {
-    // 检测 GBK 乱码特征字符（这些通常是 GBK 字节被错误解码为 UTF-8 产生的）
     const gbkSignatures = /[ʵϰгҵģʽһʮ·�����]+/;
     const highByteRatio = (text.match(/[\x80-\xff]/g) || []).length / text.length;
     
-    // 如果包含特征字符或高字节比例很高，尝试修复
     if (gbkSignatures.test(text) || highByteRatio > 0.2) {
       console.log('检测到 GBK 乱码特征，尝试修复...');
-      
-      // 将字符串按 Latin1 编码转回字节
-      // 注意：这里假设每个字符的 charCode 就是原始字节值（0-255）
       const bytes = new Uint8Array(text.length);
       let valid = true;
       
       for (let i = 0; i < text.length; i++) {
         const code = text.charCodeAt(i);
         if (code > 255) {
-          // 如果有字符码点超过 255，说明不是简单的 Latin1 编码，无法恢复
           valid = false;
           break;
         }
@@ -132,55 +108,31 @@ const tryRecoverGbkFromMojibake = (text: string): string => {
       }
       
       if (valid) {
-        // 用 GB18030 解码
         try {
           const decoder = new TextDecoder('gb18030', { fatal: false });
           const decoded = decoder.decode(bytes);
-          
-          // 验证修复效果：修复后应该不再包含大量乱码特征
           const stillGarbled = (decoded.match(/[ʵϰгҵģʽһʮ·�]/g) || []).length;
           if (stillGarbled < decoded.length * 0.01) {
             console.log('GBK 修复成功');
             return decoded;
           }
-        } catch (e) {
-          console.warn('GBK 解码失败:', e);
-        }
+        } catch (e) {}
       }
     }
-  } catch (e) {
-    console.error('编码修复失败:', e);
-  }
+  } catch (e) {}
   return text;
 };
 
-/**
- * 清理文本内容
- */
 const cleanContent = (text: string): string => {
   if (!text) return '';
   
   let cleaned = text;
-  
-  // 1. 尝试修复 GBK 乱码（针对传入的字符串）
   cleaned = tryRecoverGbkFromMojibake(cleaned);
-  
-  // 2. 移除 BOM 头
   cleaned = cleaned.replace(/^\uFEFF|^\uFFFE/g, '');
-  
-  // 3. 统一换行符
   cleaned = cleaned.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
-  
-  // 4. 移除行尾空格
   cleaned = cleaned.replace(/[ \t]+$/gm, '');
-  
-  // 5. 移除控制字符（保留 \n \t）
   cleaned = cleaned.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, '');
-  
-  // 6. 合并连续空行
   cleaned = cleaned.replace(/\n{3,}/g, '\n\n');
-  
-  // 7. 清理首尾
   cleaned = cleaned.trim();
   
   return cleaned;
@@ -266,18 +218,14 @@ export const TextReader: React.FC<TextReaderProps> = ({
   rawBuffer,
   encoding = 'auto'
 }) => {
-  // 处理内容解码和清理
+  // 处理内容
   const cleanedContent = useMemo(() => {
     let decodedText: string;
-    
     if (rawBuffer) {
-      // 如果有原始二进制数据，直接解码
       decodedText = decodeBuffer(rawBuffer, encoding);
     } else {
-      // 只有字符串，先尝试修复可能的 GBK 乱码
       decodedText = content;
     }
-    
     return cleanContent(decodedText);
   }, [content, rawBuffer, encoding]);
   
@@ -290,7 +238,8 @@ export const TextReader: React.FC<TextReaderProps> = ({
   const [showChapters, setShowChapters] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [isReady, setIsReady] = useState(false);
-  const [decodeError, setDecodeError] = useState(false);
+  const [safeAreaTop, setSafeAreaTop] = useState(0);
+  const [safeAreaBottom, setSafeAreaBottom] = useState(0);
   
   const parentRef = useRef<HTMLDivElement>(null);
   const uiTimeoutRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
@@ -299,18 +248,36 @@ export const TextReader: React.FC<TextReaderProps> = ({
   
   const theme = THEMES[settings.theme] || THEMES[0];
 
-  // 检测解码是否成功（如果修复后仍然全是乱码，显示错误）
+  // 获取安全区域高度（刘海屏适配）
   useEffect(() => {
-    const checkContent = cleanedContent;
-    const garbledRatio = (checkContent.match(/[�ʵϰгҵģʽһʮ·\x00-\x08\x0b\x0c\x0e-\x1f]/g) || []).length / checkContent.length;
+    // 读取CSS环境变量中的安全区域高度
+    const getSafeArea = () => {
+      // 动态计算：在iOS上可以通过window.screen.height和window.innerHeight差值估算
+      // 但最可靠的是读取env(safe-area-inset-top)
+      const style = document.createElement('div').style;
+      style.position = 'fixed';
+      style.paddingTop = 'env(safe-area-inset-top)';
+      style.paddingBottom = 'env(safe-area-inset-bottom)';
+      document.body.appendChild(style as unknown as HTMLElement);
+      const computed = getComputedStyle(style as unknown as HTMLElement);
+      const sat = parseInt(computed.paddingTop || '0', 10);
+      const sab = parseInt(computed.paddingBottom || '0', 10);
+      document.body.removeChild(style as unknown as HTMLElement);
+      
+      setSafeAreaTop(sat || 44); // 默认44px（iPhone刘海高度）
+      setSafeAreaBottom(sab || 34); // 默认34px（iPhone底部安全区）
+    };
+
+    getSafeArea();
     
-    if (garbledRatio > 0.3 && !rawBuffer) {
-      console.error('文本解码失败，请使用 FileReader.readAsArrayBuffer 读取文件并传入 rawBuffer');
-      setDecodeError(true);
-    } else {
-      setDecodeError(false);
-    }
-  }, [cleanedContent, rawBuffer]);
+    // 监听全屏变化，重新计算
+    const handleResize = () => {
+      getSafeArea();
+    };
+    
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
 
   // 虚拟滚动配置
   const estimateSize = useCallback((index: number): number => {
@@ -399,7 +366,9 @@ export const TextReader: React.FC<TextReaderProps> = ({
   
   // 全屏监听
   useEffect(() => {
-    const handler = () => setIsFullscreen(!!document.fullscreenElement);
+    const handler = () => {
+      setIsFullscreen(!!document.fullscreenElement);
+    };
     document.addEventListener('fullscreenchange', handler);
     return () => document.removeEventListener('fullscreenchange', handler);
   }, []);
@@ -540,6 +509,10 @@ export const TextReader: React.FC<TextReaderProps> = ({
   
   if (!items.length) return null;
   
+  // 动态计算安全区域padding
+  const topSafeHeight = isFullscreen ? Math.max(safeAreaTop, 44) : 0; // 全屏时留出刘海高度
+  const bottomSafeHeight = isFullscreen ? Math.max(safeAreaBottom, 34) : 0; // 全屏时留出底部手势条
+  
   return (
     <div 
       className="fixed inset-0 z-50 flex flex-col overflow-hidden" 
@@ -547,18 +520,31 @@ export const TextReader: React.FC<TextReaderProps> = ({
         backgroundColor: theme.bg,
         fontFamily: settings.fontFamily,
         WebkitFontSmoothing: 'antialiased',
+        // 全屏模式下确保背景延伸到刘海区域
+        paddingTop: isFullscreen ? `${topSafeHeight}px` : 0,
+        paddingBottom: isFullscreen ? `${bottomSafeHeight}px` : 0,
+        boxSizing: 'border-box',
       }}
     >
-      {/* 解码错误提示 */}
-      {decodeError && (
-        <div className="absolute top-4 left-1/2 -translate-x-1/2 z-[60] bg-red-500 text-white px-4 py-2 rounded-lg text-sm shadow-lg">
-          <strong>编码错误</strong>：无法正确解码文本，请使用 ArrayBuffer 方式读取文件（见控制台）
-        </div>
+      {/* 全屏模式下的状态栏背景填充（防止透明看到后面） */}
+      {isFullscreen && (
+        <div 
+          className="fixed left-0 right-0 z-[45] pointer-events-none"
+          style={{
+            top: 0,
+            height: `${topSafeHeight}px`,
+            backgroundColor: theme.bg,
+          }}
+        />
       )}
       
       {/* 加载遮罩 */}
       {!isReady && (
-        <div className="absolute inset-0 z-50 flex items-center justify-center" style={{ backgroundColor: theme.bg }}>
+        <div className="absolute inset-0 z-50 flex items-center justify-center" style={{ 
+          backgroundColor: theme.bg,
+          top: isFullscreen ? topSafeHeight : 0,
+          bottom: isFullscreen ? bottomSafeHeight : 0,
+        }}>
           <div className="flex flex-col items-center gap-4">
             <div className="w-8 h-8 border-4 border-t-transparent rounded-full animate-spin" style={{ borderColor: `${theme.accent}40`, borderTopColor: theme.accent }} />
             <span style={{ color: theme.text }}>加载中...</span>
@@ -566,25 +552,28 @@ export const TextReader: React.FC<TextReaderProps> = ({
         </div>
       )}
       
-      {/* 顶部栏 */}
+      {/* 顶部栏 - 关键修改：全屏模式下增加顶部padding避开刘海 */}
       <header 
-        className={`absolute top-0 left-0 right-0 z-40 transition-all duration-300 ${
+        className={`absolute left-0 right-0 z-40 transition-all duration-300 ${
           showUI ? 'opacity-100 translate-y-0' : 'opacity-0 -translate-y-full pointer-events-none'
         }`}
         style={{ 
+          top: isFullscreen ? `${topSafeHeight}px` : 0, // 全屏时向下偏移避开刘海
           backgroundColor: `${theme.bg}f0`, 
           backdropFilter: 'blur(12px)',
           borderBottom: `1px solid ${theme.border}`,
+          // 非全屏模式下如果有刘海也稍微留点空间
+          paddingTop: !isFullscreen && safeAreaTop > 20 ? '8px' : 0,
         }}
       >
         <div className="h-14 px-4 flex items-center justify-between max-w-3xl mx-auto">
-          <button onClick={onClose} className="p-2 -ml-2 rounded-full" style={{ color: theme.text }}>
-            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2">
+          <button onClick={onClose} className="p-2 -ml-2 rounded-full active:opacity-60" style={{ color: theme.text }}>
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
               <path d="M19 12H5M12 19l-7-7 7-7" />
             </svg>
           </button>
           
-          <div className="flex-1 text-center px-4">
+          <div className="flex-1 text-center px-4 overflow-hidden">
             <h1 className="text-[15px] font-semibold truncate" style={{ color: theme.text }}>{title}</h1>
             <p className="text-[11px] opacity-60 truncate" style={{ color: theme.text }}>
               {chapters[currentChapter]?.title || ''}
@@ -592,13 +581,13 @@ export const TextReader: React.FC<TextReaderProps> = ({
           </div>
           
           <div className="flex items-center gap-1">
-            <button onClick={() => setShowChapters(true)} className="p-2.5 rounded-full" style={{ color: theme.text }}>
+            <button onClick={() => setShowChapters(true)} className="p-2.5 rounded-full active:opacity-60" style={{ color: theme.text }}>
               <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                 <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" />
                 <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" />
               </svg>
             </button>
-            <button onClick={toggleFullscreen} className="p-2.5 rounded-full" style={{ color: theme.text }}>
+            <button onClick={toggleFullscreen} className="p-2.5 rounded-full active:opacity-60" style={{ color: theme.text }}>
               <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                 {isFullscreen ? (
                   <path d="M8 3v3a2 2 0 0 1-2 2H3m18 0h-3a2 2 0 0 1-2-2V3m0 18v-3a2 2 0 0 1 2-2h3M3 16h3a2 2 0 0 1 2 2v3" />
@@ -607,7 +596,7 @@ export const TextReader: React.FC<TextReaderProps> = ({
                 )}
               </svg>
             </button>
-            <button onClick={() => setShowSettings(true)} className="p-2.5 rounded-full" style={{ color: theme.text }}>
+            <button onClick={() => setShowSettings(true)} className="p-2.5 rounded-full active:opacity-60" style={{ color: theme.text }}>
               <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                 <circle cx="12" cy="12" r="3" />
                 <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z" />
@@ -617,19 +606,22 @@ export const TextReader: React.FC<TextReaderProps> = ({
         </div>
       </header>
       
-      {/* 阅读区域 */}
+      {/* 阅读区域 - 关键修改：全屏时调整padding避开刘海和底部手势条 */}
       <div 
         ref={parentRef}
         className="flex-1 overflow-y-auto relative w-full h-full"
         onClick={handleContainerClick}
+        style={{
+          // 全屏时内容区域向下偏移，不被刘海遮挡
+          paddingTop: isFullscreen ? `${topSafeHeight + 60}px` : (showUI ? '70px' : '24px'),
+          paddingBottom: isFullscreen ? `${bottomSafeHeight + 80}px` : (showUI ? '100px' : '60px'),
+        }}
       >
         <div
           style={{
             height: `${virtualizer.getTotalSize()}px`,
             width: '100%',
             position: 'relative',
-            paddingTop: showUI ? '70px' : '24px',
-            paddingBottom: showUI ? '100px' : '60px',
           }}
         >
           {virtualizer.getVirtualItems().map((virtualItem) => (
@@ -644,12 +636,13 @@ export const TextReader: React.FC<TextReaderProps> = ({
         </div>
       </div>
       
-      {/* 底部栏 */}
+      {/* 底部栏 - 关键修改：全屏时向上偏移避开底部手势条 */}
       <footer 
-        className={`absolute bottom-0 left-0 right-0 z-40 transition-all duration-300 ${
+        className={`absolute left-0 right-0 z-40 transition-all duration-300 ${
           showUI ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-full pointer-events-none'
         }`}
         style={{ 
+          bottom: isFullscreen ? `${bottomSafeHeight}px` : 0, // 全屏时向上偏移
           backgroundColor: `${theme.bg}f0`, 
           backdropFilter: 'blur(12px)',
           borderTop: `1px solid ${theme.border}`,
@@ -659,7 +652,7 @@ export const TextReader: React.FC<TextReaderProps> = ({
           <button 
             onClick={prevChapter}
             disabled={currentChapter === 0}
-            className="text-[13px] font-semibold disabled:opacity-30"
+            className="text-[13px] font-semibold disabled:opacity-30 active:opacity-60"
             style={{ color: theme.text }}
           >
             上一章
@@ -670,9 +663,9 @@ export const TextReader: React.FC<TextReaderProps> = ({
               <span>{currentProgress}%</span>
               <span>{currentChapter + 1} / {chapters.length}</span>
             </div>
-            <div className="relative h-1.5 rounded-full" style={{ backgroundColor: theme.border }}>
+            <div className="relative h-1.5 rounded-full overflow-hidden" style={{ backgroundColor: theme.border }}>
               <div 
-                className="absolute left-0 top-0 h-full rounded-full"
+                className="absolute left-0 top-0 h-full rounded-full transition-all"
                 style={{ width: `${currentProgress}%`, backgroundColor: theme.accent }}
               />
               <input 
@@ -693,7 +686,7 @@ export const TextReader: React.FC<TextReaderProps> = ({
           <button 
             onClick={nextChapter}
             disabled={currentChapter >= chapters.length - 1}
-            className="text-[13px] font-semibold disabled:opacity-30"
+            className="text-[13px] font-semibold disabled:opacity-30 active:opacity-60"
             style={{ color: theme.text }}
           >
             下一章
@@ -706,18 +699,21 @@ export const TextReader: React.FC<TextReaderProps> = ({
         <div className="absolute inset-0 z-50 flex">
           <div 
             className="w-[min(320px,85vw)] h-full shadow-2xl panel flex flex-col"
-            style={{ backgroundColor: theme.bg }}
+            style={{ 
+              backgroundColor: theme.bg,
+              paddingTop: isFullscreen ? `${topSafeHeight}px` : 0,
+            }}
           >
             <div className="p-4 border-b flex items-center justify-between" style={{ borderColor: theme.border }}>
               <h2 className="font-bold text-lg" style={{ color: theme.text }}>目录</h2>
-              <button onClick={() => setShowChapters(false)} style={{ color: theme.text }}>✕</button>
+              <button onClick={() => setShowChapters(false)} style={{ color: theme.text }} className="p-2">✕</button>
             </div>
             <div className="flex-1 overflow-y-auto">
               {chapters.map((ch) => (
                 <button
                   key={ch.index}
                   onClick={() => goToChapter(ch.index)}
-                  className="w-full text-left px-6 py-4 border-b"
+                  className="w-full text-left px-6 py-4 border-b active:opacity-60"
                   style={{ 
                     borderColor: theme.border,
                     color: currentChapter === ch.index ? theme.accent : theme.text,
@@ -733,17 +729,20 @@ export const TextReader: React.FC<TextReaderProps> = ({
         </div>
       )}
       
-      {/* 设置面板（简化版） */}
+      {/* 设置面板 */}
       {showSettings && (
         <div className="absolute inset-0 z-50 flex justify-end">
           <div className="flex-1 bg-black/30" onClick={() => setShowSettings(false)} />
           <div 
             className="w-[min(360px,90vw)] h-full shadow-2xl p-6 overflow-y-auto"
-            style={{ backgroundColor: theme.bg }}
+            style={{ 
+              backgroundColor: theme.bg,
+              paddingTop: isFullscreen ? `${topSafeHeight + 20}px` : '24px',
+            }}
           >
             <div className="flex items-center justify-between mb-6">
               <h2 className="font-bold text-lg" style={{ color: theme.text }}>阅读设置</h2>
-              <button onClick={() => setShowSettings(false)} style={{ color: theme.text }}>✕</button>
+              <button onClick={() => setShowSettings(false)} style={{ color: theme.text }} className="p-2">✕</button>
             </div>
             
             <div className="space-y-6">
@@ -774,12 +773,31 @@ export const TextReader: React.FC<TextReaderProps> = ({
                     <button
                       key={i}
                       onClick={() => updateSetting('theme', i)}
-                      className="aspect-square rounded-lg"
+                      className="aspect-square rounded-lg border-2"
                       style={{ 
                         backgroundColor: t.bg,
-                        border: settings.theme === i ? `2px solid ${t.accent}` : 'none'
+                        borderColor: settings.theme === i ? t.accent : 'transparent'
                       }}
                     />
+                  ))}
+                </div>
+              </div>
+
+              <div>
+                <span style={{ color: theme.text }}>对齐方式</span>
+                <div className="flex gap-2 mt-2">
+                  {(['left', 'justify', 'center'] as const).map((align) => (
+                    <button
+                      key={align}
+                      onClick={() => updateSetting('textAlign', align)}
+                      className="flex-1 py-2 rounded text-sm"
+                      style={{
+                        backgroundColor: settings.textAlign === align ? theme.accent : theme.secondaryBg,
+                        color: settings.textAlign === align ? '#fff' : theme.text,
+                      }}
+                    >
+                      {align === 'left' ? '左对齐' : align === 'justify' ? '两端对齐' : '居中'}
+                    </button>
                   ))}
                 </div>
               </div>
@@ -792,37 +810,23 @@ export const TextReader: React.FC<TextReaderProps> = ({
 };
 
 // ============================== 文件读取辅助函数 ==============================
-
-/**
- * 正确读取 GB2312/GBK 文件的方法
- * 使用示例：
- * const file = e.target.files[0];
- * const { buffer, text } = await readFile(file);
- * <TextReader rawBuffer={buffer} content={text} ... />
- */
 export const readFile = (file: File): Promise<{ buffer: ArrayBuffer; text: string }> => {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
-    
-    // 关键：使用 readAsArrayBuffer 而不是 readAsText
     reader.readAsArrayBuffer(file);
     
     reader.onload = (e) => {
       const buffer = e.target?.result as ArrayBuffer;
-      // 自动检测编码并解码
       const bytes = new Uint8Array(buffer);
       let text: string;
       
-      // 尝试 GB18030
       try {
         const gbDecoder = new TextDecoder('gb18030', { fatal: false });
         text = gbDecoder.decode(bytes);
-        // 验证：如果解码后全是乱码特征，可能是 UTF-8
         if ((text.match(/[ʵϰгҵģʽһʮ·�]/g) || []).length > text.length * 0.1) {
           throw new Error('可能不是 GBK');
         }
       } catch {
-        // 回退到 UTF-8
         text = new TextDecoder('utf-8', { fatal: false }).decode(bytes);
       }
       
