@@ -2,9 +2,9 @@ import { useState, useRef, useCallback, useEffect } from 'react';
 import { Document, Page, pdfjs } from 'react-pdf';
 import { 
   ChevronLeft, ChevronRight, Search, RotateCw, ZoomIn, ZoomOut, 
-  Maximize2, Minimize2, Download, MessageSquare, 
+  Maximize2, Minimize2, Download, MessageSquare, AlertCircle,
   Highlighter, X, LayoutList, Grid3X3, ScrollText, 
-  PanelLeft, PanelRight
+  PanelLeft, PanelRight, FileX
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -14,8 +14,31 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/comp
 import { cn } from '@/lib/utils';
 import { toast } from 'sonner';
 
-// 设置 worker
-pdfjs.GlobalWorkerOptions.workerSrc = `//cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjs.version}/pdf.worker.min.js`;
+// ==================== 关键修复：Worker 配置 ====================
+// 方案1：使用 CDN（确保版本匹配）
+const pdfjsVersion = pdfjs.version;
+console.log('PDF.js Version:', pdfjsVersion);
+
+// 尝试多个 worker 源，防止某个 CDN 失效
+const workerSources = [
+  `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsVersion}/pdf.worker.min.js`,
+  `https://unpkg.com/pdfjs-dist@${pdfjsVersion}/build/pdf.worker.min.js`,
+  `/pdf.worker.min.js` // 本地备选
+];
+
+const loadWorker = async () => {
+  for (const src of workerSources) {
+    try {
+      pdfjs.GlobalWorkerOptions.workerSrc = src;
+      console.log('PDF Worker loaded from:', src);
+      return;
+    } catch (e) {
+      console.warn('Failed to load worker from:', src);
+    }
+  }
+};
+
+loadWorker();
 
 // ==================== 类型定义 ====================
 type AnnotationType = 'note' | 'highlight' | 'text';
@@ -53,7 +76,6 @@ interface PDFViewerProps {
   onDownloadFile?: (includeAnnotations: boolean) => void;
 }
 
-// ==================== 工具函数 ====================
 const useLocalStorage = <T,>(key: string, initialValue: T): [T, (value: T | ((prev: T) => T)) => void] => {
   const [value, setValue] = useState<T>(() => {
     if (typeof window === 'undefined') return initialValue;
@@ -76,7 +98,6 @@ const useLocalStorage = <T,>(key: string, initialValue: T): [T, (value: T | ((pr
   return [value, setValue];
 };
 
-// ==================== 主组件 ====================
 export function PDFViewer({
   fileUrl,
   book,
@@ -86,7 +107,6 @@ export function PDFViewer({
   onDeleteAnnotation,
   onDownloadFile,
 }: PDFViewerProps) {
-  // 核心状态
   const [numPages, setNumPages] = useState(0);
   const [pageNumber, setPageNumber] = useState(1);
   const [scale, setScale] = useLocalStorage('pdf-scale', 1.2);
@@ -96,27 +116,49 @@ export function PDFViewer({
   const [isSidebarOpen, setIsSidebarOpen] = useLocalStorage('pdf-sidebar-open', true);
   const [isFullscreen, setIsFullscreen] = useState(false);
   
-  // 搜索
+  // 错误状态
+  const [loadError, setLoadError] = useState<Error | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+  
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState<Array<{ page: number; matchIndex: number }>>([]);
   
-  // 批注
   const [activeTool, setActiveTool] = useState<'select' | 'note' | 'highlight'>('select');
   const [selectionRect, setSelectionRect] = useState<DOMRect | null>(null);
   const [pendingAnnotation, setPendingAnnotation] = useState<Partial<PDFAnnotation> | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
   
-  // Refs
   const containerRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const searchTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // ==================== 事件处理 ====================
+  // 验证 fileUrl
+  useEffect(() => {
+    console.log('PDF Viewer mounted with fileUrl:', fileUrl);
+    if (!fileUrl) {
+      setLoadError(new Error('未提供文件路径'));
+      setIsLoading(false);
+    } else {
+      setLoadError(null);
+      setIsLoading(true);
+    }
+  }, [fileUrl]);
+
   const onDocumentLoadSuccess = useCallback(({ numPages }: { numPages: number }) => {
+    console.log('PDF loaded successfully, pages:', numPages);
     setNumPages(numPages);
+    setLoadError(null);
+    setIsLoading(false);
     const savedPage = localStorage.getItem(`pdf-progress-${book.id}`);
     if (savedPage) setPageNumber(parseInt(savedPage));
   }, [book.id]);
+
+  const onDocumentLoadError = useCallback((error: Error) => {
+    console.error('PDF load error:', error);
+    setLoadError(error);
+    setIsLoading(false);
+    toast.error(`PDF加载失败: ${error.message}`);
+  }, []);
 
   const handlePageChange = useCallback((newPage: number) => {
     const page = Math.max(1, Math.min(newPage, numPages));
@@ -124,7 +166,6 @@ export function PDFViewer({
     localStorage.setItem(`pdf-progress-${book.id}`, String(page));
   }, [numPages, book.id]);
 
-  // 缩放控制
   const zoomIn = useCallback(() => setScale(s => Math.min(3, s + 0.2)), [setScale]);
   const zoomOut = useCallback(() => setScale(s => Math.max(0.5, s - 0.2)), [setScale]);
   const fitToWidth = useCallback(() => {
@@ -134,7 +175,6 @@ export function PDFViewer({
     setScale((containerWidth - sidebarOffset - 80) / pageWidth);
   }, [isSidebarOpen, setScale]);
 
-  // 全屏
   const toggleFullscreen = useCallback(async () => {
     try {
       if (!document.fullscreenElement) {
@@ -149,7 +189,6 @@ export function PDFViewer({
     }
   }, []);
 
-  // ==================== 搜索功能 ====================
   const handleSearch = useCallback(async (query: string) => {
     if (!query || !numPages) return;
     setSearchQuery(query);
@@ -181,7 +220,6 @@ export function PDFViewer({
     }
   }, [fileUrl, numPages, handlePageChange]);
 
-  // ==================== 文本选择 & 批注 ====================
   const handleTextSelection = useCallback(() => {
     if (activeTool === 'select') return;
     
@@ -235,7 +273,6 @@ export function PDFViewer({
     toast.success('批注已添加');
   }, [pendingAnnotation, onAddAnnotation]);
 
-  // ==================== 键盘快捷键 ====================
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
@@ -287,7 +324,6 @@ export function PDFViewer({
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [pageNumber, numPages, viewMode, handlePageChange, setSidebarTab, setIsSidebarOpen, activeTool]);
 
-  // ==================== 渲染辅助 ====================
   const renderPage = useCallback((pageNum: number) => {
     const isActive = pageNum === pageNumber || (viewMode === 'double' && pageNum === pageNumber + 1);
     
@@ -306,7 +342,7 @@ export function PDFViewer({
           scale={scale}
           rotate={rotation}
           renderTextLayer={true}
-          renderAnnotationLayer={true}
+          renderAnnotationLayer={false}
           className="shadow-2xl"
           loading={
             <div className="w-[600px] h-[800px] flex items-center justify-center bg-white">
@@ -318,7 +354,6 @@ export function PDFViewer({
           }
         />
         
-        {/* 批注层 */}
         {annotations
           .filter(ann => ann.page === pageNum)
           .map(ann => (
@@ -364,14 +399,60 @@ export function PDFViewer({
     );
   }, [pageNumber, scale, rotation, viewMode, annotations]);
 
-  // ==================== UI 组件 ====================
+  // ==================== 错误提示组件 ====================
+  const ErrorDisplay = () => {
+    if (!loadError) return null;
+    
+    let errorMessage = loadError.message;
+    let helpText = '';
+    
+    if (errorMessage.includes('worker')) {
+      helpText = 'PDF.js Worker 加载失败，请检查网络连接或尝试刷新页面';
+    } else if (errorMessage.includes('404') || errorMessage.includes('Failed to fetch')) {
+      helpText = '文件路径错误或文件不存在，请检查 fileUrl 是否正确';
+    } else if (errorMessage.includes('CORS')) {
+      helpText = '跨域访问被阻止，请确保 PDF 文件允许跨域访问或使用本地文件';
+    } else if (errorMessage.includes('Invalid PDF')) {
+      helpText = '文件格式不正确或已损坏';
+    }
+    
+    return (
+      <div className="h-full flex items-center justify-center p-8">
+        <div className="max-w-md text-center space-y-4">
+          <div className="w-16 h-16 bg-destructive/10 rounded-full flex items-center justify-center mx-auto">
+            <FileX className="h-8 w-8 text-destructive" />
+          </div>
+          <div>
+            <h3 className="text-lg font-semibold text-destructive mb-2">无法加载 PDF 文件</h3>
+            <p className="text-sm text-muted-foreground mb-2">{errorMessage}</p>
+            {helpText && (
+              <div className="flex items-start gap-2 text-sm text-muted-foreground bg-muted p-3 rounded-lg text-left">
+                <AlertCircle className="h-4 w-4 mt-0.5 shrink-0" />
+                <span>{helpText}</span>
+              </div>
+            )}
+          </div>
+          <div className="pt-4 space-y-2">
+            <p className="text-xs text-muted-foreground">调试信息：</p>
+            <code className="block text-xs bg-muted p-2 rounded break-all">
+              URL: {fileUrl || 'undefined'}<br/>
+              Worker: {pdfjs.GlobalWorkerOptions.workerSrc || 'not set'}
+            </code>
+          </div>
+          <Button onClick={() => window.location.reload()} variant="outline">
+            刷新页面重试
+          </Button>
+        </div>
+      </div>
+    );
+  };
+
   const Toolbar = () => (
     <div className={cn(
       "flex items-center justify-between px-4 py-2 bg-background/95 backdrop-blur border-b",
       "sticky top-0 z-50 transition-all duration-300",
       isFullscreen ? "opacity-0 hover:opacity-100" : ""
     )}>
-      {/* 左侧：文档信息 */}
       <div className="flex items-center gap-3 w-[200px]">
         <Button 
           variant="ghost" 
@@ -387,13 +468,12 @@ export function PDFViewer({
         </div>
       </div>
 
-      {/* 中央：阅读控制 */}
       <div className="flex items-center gap-1">
         <TooltipProvider>
           <div className="flex items-center bg-muted rounded-lg p-1 gap-1">
             <Tooltip>
               <TooltipTrigger asChild>
-                <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => handlePageChange(pageNumber - 1)} disabled={pageNumber <= 1}>
+                <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => handlePageChange(pageNumber - 1)} disabled={pageNumber <= 1 || !!loadError}>
                   <ChevronLeft className="h-4 w-4" />
                 </Button>
               </TooltipTrigger>
@@ -407,11 +487,12 @@ export function PDFViewer({
               className="w-16 h-8 text-center"
               min={1} 
               max={numPages}
+              disabled={!!loadError}
             />
             
             <Tooltip>
               <TooltipTrigger asChild>
-                <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => handlePageChange(pageNumber + 1)} disabled={pageNumber >= numPages}>
+                <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => handlePageChange(pageNumber + 1)} disabled={pageNumber >= numPages || !!loadError}>
                   <ChevronRight className="h-4 w-4" />
                 </Button>
               </TooltipTrigger>
@@ -422,34 +503,16 @@ export function PDFViewer({
           <div className="w-px h-6 bg-border mx-2" />
 
           <div className="flex items-center bg-muted rounded-lg p-1 gap-1">
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button variant="ghost" size="icon" className="h-8 w-8" onClick={zoomOut}>
-                  <ZoomOut className="h-4 w-4" />
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent>缩小 (Ctrl+-)</TooltipContent>
-            </Tooltip>
-            
+            <Button variant="ghost" size="icon" className="h-8 w-8" onClick={zoomOut} disabled={!!loadError}>
+              <ZoomOut className="h-4 w-4" />
+            </Button>
             <span className="text-xs w-12 text-center font-mono">{Math.round(scale * 100)}%</span>
-            
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button variant="ghost" size="icon" className="h-8 w-8" onClick={zoomIn}>
-                  <ZoomIn className="h-4 w-4" />
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent>放大 (Ctrl++)</TooltipContent>
-            </Tooltip>
-            
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button variant="ghost" size="icon" className="h-8 w-8" onClick={fitToWidth}>
-                  <Maximize2 className="h-4 w-4" />
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent>适应宽度</TooltipContent>
-            </Tooltip>
+            <Button variant="ghost" size="icon" className="h-8 w-8" onClick={zoomIn} disabled={!!loadError}>
+              <ZoomIn className="h-4 w-4" />
+            </Button>
+            <Button variant="ghost" size="icon" className="h-8 w-8" onClick={fitToWidth} disabled={!!loadError}>
+              <Maximize2 className="h-4 w-4" />
+            </Button>
           </div>
 
           <div className="w-px h-6 bg-border mx-2" />
@@ -460,6 +523,7 @@ export function PDFViewer({
               size="icon" 
               className="h-8 w-8"
               onClick={() => setViewMode('single')}
+              disabled={!!loadError}
             >
               <LayoutList className="h-4 w-4" />
             </Button>
@@ -468,6 +532,7 @@ export function PDFViewer({
               size="icon" 
               className="h-8 w-8"
               onClick={() => setViewMode('double')}
+              disabled={!!loadError}
             >
               <Grid3X3 className="h-4 w-4" />
             </Button>
@@ -476,6 +541,7 @@ export function PDFViewer({
               size="icon" 
               className="h-8 w-8"
               onClick={() => setViewMode('scroll')}
+              disabled={!!loadError}
             >
               <ScrollText className="h-4 w-4" />
             </Button>
@@ -483,67 +549,42 @@ export function PDFViewer({
         </TooltipProvider>
       </div>
 
-      {/* 右侧：工具 */}
       <div className="flex items-center gap-1 w-[200px] justify-end">
         <TooltipProvider>
           <div className="flex items-center bg-muted rounded-lg p-1 gap-1">
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button 
-                  variant={activeTool === 'highlight' ? 'secondary' : 'ghost'} 
-                  size="icon" 
-                  className="h-8 w-8"
-                  onClick={() => setActiveTool(activeTool === 'highlight' ? 'select' : 'highlight')}
-                >
-                  <Highlighter className="h-4 w-4" />
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent>高亮 (H)</TooltipContent>
-            </Tooltip>
-            
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button 
-                  variant={activeTool === 'note' ? 'secondary' : 'ghost'} 
-                  size="icon" 
-                  className="h-8 w-8"
-                  onClick={() => setActiveTool(activeTool === 'note' ? 'select' : 'note')}
-                >
-                  <MessageSquare className="h-4 w-4" />
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent>批注 (N)</TooltipContent>
-            </Tooltip>
+            <Button 
+              variant={activeTool === 'highlight' ? 'secondary' : 'ghost'} 
+              size="icon" 
+              className="h-8 w-8"
+              onClick={() => setActiveTool(activeTool === 'highlight' ? 'select' : 'highlight')}
+              disabled={!!loadError}
+            >
+              <Highlighter className="h-4 w-4" />
+            </Button>
+            <Button 
+              variant={activeTool === 'note' ? 'secondary' : 'ghost'} 
+              size="icon" 
+              className="h-8 w-8"
+              onClick={() => setActiveTool(activeTool === 'note' ? 'select' : 'note')}
+              disabled={!!loadError}
+            >
+              <MessageSquare className="h-4 w-4" />
+            </Button>
           </div>
 
           <div className="w-px h-6 bg-border mx-2" />
 
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => setRotation(r => (r + 90) % 360)}>
-                <RotateCw className="h-4 w-4" />
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent>旋转 (R)</TooltipContent>
-          </Tooltip>
+          <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => setRotation(r => (r + 90) % 360)} disabled={!!loadError}>
+            <RotateCw className="h-4 w-4" />
+          </Button>
 
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button variant="ghost" size="icon" className="h-8 w-8" onClick={toggleFullscreen}>
-                {isFullscreen ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent>全屏 (F11)</TooltipContent>
-          </Tooltip>
+          <Button variant="ghost" size="icon" className="h-8 w-8" onClick={toggleFullscreen}>
+            {isFullscreen ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}
+          </Button>
 
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => onDownloadFile?.(true)}>
-                <Download className="h-4 w-4" />
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent>下载</TooltipContent>
-          </Tooltip>
+          <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => onDownloadFile?.(true)} disabled={!!loadError}>
+            <Download className="h-4 w-4" />
+          </Button>
         </TooltipProvider>
       </div>
     </div>
@@ -576,7 +617,7 @@ export function PDFViewer({
         </div>
 
         <ScrollArea className="flex-1">
-          {sidebarTab === 'thumbnails' && (
+          {sidebarTab === 'thumbnails' && !loadError && (
             <div className="p-2 space-y-2">
               {Array.from({ length: numPages }, (_, i) => i + 1).map((page) => (
                 <div
@@ -616,6 +657,7 @@ export function PDFViewer({
                     searchTimeout.current = setTimeout(() => handleSearch(e.target.value), 500);
                   }}
                   className="pl-8"
+                  disabled={!!loadError}
                 />
               </div>
               {searchResults.length > 0 && (
@@ -671,7 +713,6 @@ export function PDFViewer({
     );
   };
 
-  // ==================== 主渲染 ====================
   return (
     <div ref={containerRef} className="flex flex-col h-full bg-background overflow-hidden">
       <Toolbar />
@@ -684,37 +725,43 @@ export function PDFViewer({
           className="flex-1 overflow-auto bg-muted/30 relative"
           onMouseUp={handleTextSelection}
         >
-          <Document
-            file={fileUrl}
-            onLoadSuccess={onDocumentLoadSuccess}
-            loading={
-              <div className="h-full flex items-center justify-center">
-                <div className="flex flex-col items-center gap-4">
-                  <div className="w-12 h-12 border-4 border-primary border-t-transparent rounded-full animate-spin" />
-                  <p className="text-muted-foreground">正在加载 PDF...</p>
+          {loadError ? (
+            <ErrorDisplay />
+          ) : (
+            <Document
+              file={fileUrl}
+              onLoadSuccess={onDocumentLoadSuccess}
+              onLoadError={onDocumentLoadError}
+              loading={
+                <div className="h-full flex items-center justify-center">
+                  <div className="flex flex-col items-center gap-4">
+                    <div className="w-12 h-12 border-4 border-primary border-t-transparent rounded-full animate-spin" />
+                    <p className="text-muted-foreground">正在加载 PDF...</p>
+                    <p className="text-xs text-muted-foreground">{fileUrl}</p>
+                  </div>
                 </div>
+              }
+            >
+              <div className={cn(
+                "min-h-full p-8 transition-all duration-300",
+                viewMode === 'scroll' ? "flex flex-col items-center" : "flex items-start justify-center gap-4"
+              )}>
+                {viewMode === 'scroll' ? (
+                  Array.from({ length: numPages }, (_, i) => i + 1).map(page => renderPage(page))
+                ) : viewMode === 'double' ? (
+                  <>
+                    {renderPage(pageNumber)}
+                    {pageNumber + 1 <= numPages && renderPage(pageNumber + 1)}
+                  </>
+                ) : (
+                  renderPage(pageNumber)
+                )}
               </div>
-            }
-          >
-            <div className={cn(
-              "min-h-full p-8 transition-all duration-300",
-              viewMode === 'scroll' ? "flex flex-col items-center" : "flex items-start justify-center gap-4"
-            )}>
-              {viewMode === 'scroll' ? (
-                Array.from({ length: numPages }, (_, i) => i + 1).map(page => renderPage(page))
-              ) : viewMode === 'double' ? (
-                <>
-                  {renderPage(pageNumber)}
-                  {pageNumber + 1 <= numPages && renderPage(pageNumber + 1)}
-                </>
-              ) : (
-                renderPage(pageNumber)
-              )}
-            </div>
-          </Document>
+            </Document>
+          )}
 
           {/* 悬浮操作提示 */}
-          {activeTool !== 'select' && (
+          {activeTool !== 'select' && !loadError && (
             <div className="absolute top-4 left-1/2 -translate-x-1/2 bg-primary text-primary-foreground 
                           px-4 py-2 rounded-full text-sm shadow-lg animate-in fade-in slide-in-from-top-2">
               {activeTool === 'highlight' ? '选中文字即可高亮' : '点击页面添加批注'}
