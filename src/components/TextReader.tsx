@@ -23,13 +23,6 @@ interface ReaderSettings {
   textAlign: 'left' | 'justify';
   paragraphSpacing: number;
   autoHideHeader: boolean;
-  brightness: number;
-}
-
-interface Progress {
-  chapter: number;
-  paragraph: number;
-  percent: number;
 }
 
 interface TextReaderProps {
@@ -39,33 +32,29 @@ interface TextReaderProps {
   onClose: () => void;
 }
 
-// ============================== 配置 ==============================
+// ============================== 蓝白主题配置 ==============================
 const FONTS = [
-  { name: '系统默认', value: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif' },
-  { name: '宋体', value: '"Noto Serif SC", "Songti SC", "SimSun", serif' },
-  { name: '黑体', value: '"Noto Sans SC", "Heiti SC", "SimHei", sans-serif' },
-  { name: '楷体', value: '"Kaiti SC", "KaiTi", serif' },
-  { name: '圆体', value: '"PingFang SC", "Microsoft YaHei", sans-serif' },
+  { name: '系统默认', value: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif' },
+  { name: '宋体', value: '"Noto Serif SC", "Source Han Serif SC", "SimSun", serif' },
+  { name: '黑体', value: '"Noto Sans SC", "Source Han Sans SC", "SimHei", sans-serif' },
+  { name: '楷体', value: '"KaiTi", "Kaiti SC", serif' },
 ];
 
 const THEMES = [
-  { name: '默认白', bg: '#ffffff', text: '#1a1a1a', link: '#0066cc' },
-  { name: '羊皮纸', bg: '#f5e6c8', text: '#3d3d3d', link: '#8b4513' },
-  { name: '护眼绿', bg: '#c7edcc', text: '#2d5a27', link: '#1e3d1a' },
-  { name: '深夜黑', bg: '#1a1a1a', text: '#b8b8b8', link: '#66b3ff' },
-  { name: '淡雅灰', bg: '#f2f2f2', text: '#333333', link: '#0066cc' },
-  { name: '樱花粉', bg: '#fce4ec', text: '#880e4f', link: '#c2185b' },
-  { name: '薄荷青', bg: '#e0f2f1', text: '#004d40', link: '#00695c' },
-  { name: ' sepia', bg: '#f4ecd8', text: '#5b4636', link: '#8b4513' },
+  { name: '天空蓝', bg: '#f0f7ff', text: '#1e3a5f', accent: '#3b82f6', border: '#dbeafe' },
+  { name: '纯净白', bg: '#ffffff', text: '#1e293b', accent: '#3b82f6', border: '#e2e8f0' },
+  { name: '深夜蓝', bg: '#0f172a', text: '#e2e8f0', accent: '#60a5fa', border: '#1e293b' },
+  { name: '淡蓝灰', bg: '#f8fafc', text: '#334155', accent: '#3b82f6', border: '#e2e8f0' },
 ];
 
 // ============================== 工具函数 ==============================
 const cleanContent = (text: string): string => {
   if (!text) return '';
   return text
-    .replace(/[^\S\r\n]+/g, ' ')
-    .replace(/\n{3,}/g, '\n\n')
+    .replace(/\r\n/g, '\n')
+    .replace(/\r/g, '\n')
     .replace(/[ \t]+$/gm, '')
+    .replace(/\n{3,}/g, '\n\n')
     .trim();
 };
 
@@ -73,14 +62,14 @@ const parseChapters = (text: string): Chapter[] => {
   if (!text) return [];
   const lines = text.split('\n');
   const chapters: Chapter[] = [];
-  let currentTitle = '开始';
+  let currentTitle = '前言';
   let currentParagraphs: string[] = [];
   
-  const chapterRegex = /^(第[一二三四五六七八九十百千万零\d]+[章节篇部卷集]|[序终][章篇]|\d+[、.]\s*|【.*?】|Chapter\s+\d+)[\s:：]*/i;
+  const chapterRegex = /^(第[一二三四五六七八九十百千万零\d]+[章节篇部卷集]|[序终][章篇]|\d+[、.]\s*|【.*?】|Chapter\s+\d+|Prologue|Epilogue)[\s:：]*/i;
   
-  lines.forEach(line => {
+  lines.forEach((line) => {
     const trimmed = line.trim();
-    if (chapterRegex.test(trimmed) && trimmed.length < 60 && trimmed.length > 1) {
+    if (chapterRegex.test(trimmed) && trimmed.length < 80) {
       if (currentParagraphs.length > 0) {
         chapters.push({
           title: currentTitle,
@@ -88,7 +77,7 @@ const parseChapters = (text: string): Chapter[] => {
           paragraphs: [...currentParagraphs],
         });
       }
-      currentTitle = trimmed.slice(0, 50);
+      currentTitle = trimmed.slice(0, 50) || `第${chapters.length + 1}章`;
       currentParagraphs = [];
     } else if (trimmed) {
       currentParagraphs.push(trimmed);
@@ -115,22 +104,18 @@ const storage = {
     lineHeight: 1.8,
     letterSpacing: 0.5,
     textAlign: 'justify',
-    paragraphSpacing: 0.8,
+    paragraphSpacing: 1,
     autoHideHeader: true,
-    brightness: 100,
   }),
   saveSettings: (s: ReaderSettings) => {
     try { localStorage.setItem(`reader-settings-${location.hostname}`, JSON.stringify(s)); } catch {}
   },
-  loadProgress: (bookId: string): Progress => {
+  loadProgress: (bookId: string) => {
     try {
-      const data = localStorage.getItem(`reader-progress-${bookId}`);
-      return data ? JSON.parse(data) : { chapter: 0, paragraph: 0, percent: 0 };
-    } catch {
-      return { chapter: 0, paragraph: 0, percent: 0 };
-    }
+      return JSON.parse(localStorage.getItem(`reader-progress-${bookId}`) || '{"chapter":0,"paragraph":0}');
+    } catch { return { chapter: 0, paragraph: 0 }; }
   },
-  saveProgress: (bookId: string, p: Progress) => {
+  saveProgress: (bookId: string, p: { chapter: number; paragraph: number }) => {
     try { localStorage.setItem(`reader-progress-${bookId}`, JSON.stringify({ ...p, time: Date.now() })); } catch {}
   },
 };
@@ -140,96 +125,93 @@ export const TextReader: React.FC<TextReaderProps> = ({ content, title, bookId, 
   const chapters = useMemo(() => parseChapters(cleanContent(content)), [content]);
   const [settings, setSettings] = useState<ReaderSettings>(storage.loadSettings());
   const [currentChapter, setCurrentChapter] = useState(0);
-  const [currentParagraph, setCurrentParagraph] = useState(0);
   const [isImmersive, setIsImmersive] = useState(false);
   const [showUI, setShowUI] = useState(true);
   const [showSettings, setShowSettings] = useState(false);
   const [showChapters, setShowChapters] = useState(false);
-  const [isAutoReading, setIsAutoReading] = useState(false);
-  const [autoReadSpeed, setAutoReadSpeed] = useState(200);
-  const [touchStart, setTouchStart] = useState<{ x: number; y: number; time: number } | null>(null);
-  const [pageTurning, setPageTurning] = useState(false);
   
-  const scrollRef = useRef<HTMLDivElement>(null);
-  const pageRef = useRef<HTMLDivElement>(null);
-  const autoReadRef = useRef<number>();
-  const hideUITimer = useRef<number>();
+  // 滚动模式状态
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const [scrollProgress, setScrollProgress] = useState(0);
+  
+  // 翻页模式状态
+  const [currentPage, setCurrentPage] = useState(0);
+  const [totalPages, setTotalPages] = useState(1);
+  const pageContentRef = useRef<HTMLDivElement>(null);
+  const pageContainerRef = useRef<HTMLDivElement>(null);
   
   const theme = THEMES[settings.theme] || THEMES[0];
   const chapter = chapters[currentChapter] || chapters[0];
   
-  // 初始化
+  // 初始化进度
   useEffect(() => {
     const saved = storage.loadProgress(bookId);
     if (saved.chapter < chapters.length) {
       setCurrentChapter(saved.chapter);
-      setCurrentParagraph(saved.paragraph);
+      // 延迟滚动到指定位置
       setTimeout(() => {
-        if (settings.pageMode === 'scroll' && scrollRef.current) {
-          const p = scrollRef.current.querySelector(`[data-idx="${saved.paragraph}"]`);
-          p?.scrollIntoView({ behavior: 'auto', block: 'start' });
+        if (settings.pageMode === 'scroll' && scrollContainerRef.current && chapters[saved.chapter]) {
+          const ratio = saved.paragraph / Math.max(1, chapters[saved.chapter].paragraphs.length);
+          scrollContainerRef.current.scrollTop = scrollContainerRef.current.scrollHeight * ratio;
         }
       }, 100);
     }
-  }, [bookId, chapters.length]);
+  }, [bookId, chapters, settings.pageMode]);
   
   // 保存进度
   useEffect(() => {
     const timer = setTimeout(() => {
-      storage.saveProgress(bookId, {
-        chapter: currentChapter,
-        paragraph: currentParagraph,
-        percent: (currentChapter / Math.max(1, chapters.length - 1)) * 100,
+      storage.saveProgress(bookId, { 
+        chapter: currentChapter, 
+        paragraph: Math.floor(scrollProgress * chapter.paragraphs.length) 
       });
     }, 300);
     return () => clearTimeout(timer);
-  }, [currentChapter, currentParagraph, bookId, chapters.length]);
-  
-  // 自动阅读
-  useEffect(() => {
-    if (isAutoReading) {
-      autoReadRef.current = window.setInterval(() => {
-        if (settings.pageMode === 'scroll') {
-          scrollRef.current?.scrollBy({ top: 1, behavior: 'auto' });
-        } else {
-          nextPage();
-        }
-      }, autoReadSpeed);
-    }
-    return () => {
-      if (autoReadRef.current) clearInterval(autoReadRef.current);
-    };
-  }, [isAutoReading, autoReadSpeed, settings.pageMode]);
+  }, [currentChapter, scrollProgress, bookId, chapter]);
   
   // UI自动隐藏
   useEffect(() => {
     if (!settings.autoHideHeader || isImmersive || showSettings || showChapters) return;
-    if (hideUITimer.current) clearTimeout(hideUITimer.current);
-    hideUITimer.current = window.setTimeout(() => setShowUI(false), 3000);
-    return () => { if (hideUITimer.current) clearTimeout(hideUITimer.current); };
-  }, [settings.autoHideHeader, isImmersive, showSettings, showChapters, showUI]);
+    const timer = setTimeout(() => setShowUI(false), 3000);
+    return () => clearTimeout(timer);
+  }, [settings.autoHideHeader, isImmersive, showSettings, showChapters, showUI, currentChapter]);
   
-  // 全屏切换
-  const toggleImmersive = useCallback(async () => {
-    const next = !isImmersive;
-    setIsImmersive(next);
-    setShowUI(true);
-    try {
-      if (next) {
-        await document.documentElement.requestFullscreen();
-      } else {
-        await document.exitFullscreen();
+  // 翻页模式：计算总页数（修复显示不全问题）
+  useEffect(() => {
+    if (settings.pageMode !== 'page') return;
+    
+    const calculatePages = () => {
+      if (!pageContainerRef.current || !pageContentRef.current) return;
+      
+      const containerHeight = pageContainerRef.current.clientHeight;
+      const contentHeight = pageContentRef.current.scrollHeight;
+      
+      if (containerHeight > 0 && contentHeight > 0) {
+        const pages = Math.max(1, Math.ceil(contentHeight / containerHeight));
+        setTotalPages(pages);
+        if (currentPage >= pages) setCurrentPage(0);
       }
-    } catch {}
-  }, [isImmersive]);
+    };
+    
+    // 延迟计算确保渲染完成
+    const timer = setTimeout(calculatePages, 100);
+    window.addEventListener('resize', calculatePages);
+    
+    return () => {
+      clearTimeout(timer);
+      window.removeEventListener('resize', calculatePages);
+    };
+  }, [settings.pageMode, chapter, currentPage, settings.fontSize, settings.lineHeight]);
   
-  // 章节跳转
+  // 章节切换
   const goChapter = useCallback((idx: number) => {
     if (idx < 0 || idx >= chapters.length) return;
     setCurrentChapter(idx);
-    setCurrentParagraph(0);
+    setCurrentPage(0);
     setShowChapters(false);
-    if (scrollRef.current) scrollRef.current.scrollTop = 0;
+    // 重置滚动位置
+    if (scrollContainerRef.current) scrollContainerRef.current.scrollTop = 0;
+    if (pageContainerRef.current) pageContainerRef.current.scrollTop = 0;
   }, [chapters.length]);
   
   const nextChapter = useCallback(() => {
@@ -240,153 +222,169 @@ export const TextReader: React.FC<TextReaderProps> = ({ content, title, bookId, 
     if (currentChapter > 0) goChapter(currentChapter - 1);
   }, [currentChapter, goChapter]);
   
-  // 翻页控制（优化版，使用 visibility 避免白屏）
-  const [currentPage, setCurrentPage] = useState(0);
-  const [totalPages, setTotalPages] = useState(1);
-  
-  const calculatePages = useCallback(() => {
-    if (settings.pageMode !== 'page' || !pageRef.current) return;
-    const containerHeight = pageRef.current.clientHeight;
-    const contentHeight = pageRef.current.scrollHeight;
-    const pages = Math.max(1, Math.ceil(contentHeight / containerHeight));
-    setTotalPages(pages);
-    if (currentPage >= pages) setCurrentPage(0);
-  }, [settings.pageMode, currentPage]);
-  
-  useEffect(() => {
-    calculatePages();
-    window.addEventListener('resize', calculatePages);
-    return () => window.removeEventListener('resize', calculatePages);
-  }, [calculatePages, chapter]);
-  
+  // 翻页控制（修复版）
   const nextPage = useCallback(() => {
-    if (pageTurning) return;
     if (currentPage < totalPages - 1) {
-      setPageTurning(true);
       setCurrentPage(p => p + 1);
-      setTimeout(() => setPageTurning(false), 300);
     } else {
       nextChapter();
-      setCurrentPage(0);
     }
-  }, [currentPage, totalPages, nextChapter, pageTurning]);
+  }, [currentPage, totalPages, nextChapter]);
   
   const prevPage = useCallback(() => {
-    if (pageTurning) return;
     if (currentPage > 0) {
-      setPageTurning(true);
       setCurrentPage(p => p - 1);
-      setTimeout(() => setPageTurning(false), 300);
     } else {
       prevChapter();
+      // 跳转到上一章最后一页
       setTimeout(() => {
-        if (pageRef.current) {
-          const pages = Math.ceil(pageRef.current.scrollHeight / pageRef.current.clientHeight);
+        if (pageContentRef.current && pageContainerRef.current) {
+          const pages = Math.ceil(pageContentRef.current.scrollHeight / pageContainerRef.current.clientHeight);
           setCurrentPage(Math.max(0, pages - 1));
         }
       }, 50);
     }
-  }, [currentPage, prevChapter, pageTurning]);
+  }, [currentPage, prevChapter]);
   
-  // 触摸处理（移动端优化）
-  const onTouchStart = useCallback((e: React.TouchEvent) => {
-    const t = e.touches[0];
-    setTouchStart({ x: t.clientX, y: t.clientY, time: Date.now() });
-  }, []);
-  
-  const onTouchEnd = useCallback((e: React.TouchEvent) => {
-    if (!touchStart) return;
-    const t = e.changedTouches[0];
-    const dx = t.clientX - touchStart.x;
-    const dy = t.clientY - touchStart.y;
-    const dt = Date.now() - touchStart.time;
-    const isTap = Math.abs(dx) < 10 && Math.abs(dy) < 10 && dt < 300;
+  // 滚动监听（修复：计算当前章节和进度）
+  const handleScroll = useCallback((e: React.UIEvent<HTMLDivElement>) => {
+    const target = e.currentTarget;
+    const { scrollTop, scrollHeight, clientHeight } = target;
+    const progress = scrollTop / (scrollHeight - clientHeight);
+    setScrollProgress(isNaN(progress) ? 0 : progress);
     
-    if (isTap) {
-      const width = window.innerWidth;
-      const x = t.clientX;
-      if (x < width * 0.3) {
-        settings.pageMode === 'page' ? prevPage() : scrollRef.current?.scrollBy({ top: -window.innerHeight * 0.8, behavior: 'smooth' });
-      } else if (x > width * 0.7) {
-        settings.pageMode === 'page' ? nextPage() : scrollRef.current?.scrollBy({ top: window.innerHeight * 0.8, behavior: 'smooth' });
-      } else {
+    // 检测是否滚动到底部，自动加载下一章
+    if (progress > 0.95 && currentChapter < chapters.length - 1) {
+      // 可以在这里添加自动加载逻辑，或保持手动切换
+    }
+  }, [currentChapter, chapters.length]);
+  
+  // 触摸/点击处理（修复：确保能呼出菜单）
+  const handleContainerClick = useCallback((e: React.MouseEvent | React.TouchEvent) => {
+    // 如果点击的是按钮，不处理
+    if ((e.target as HTMLElement).closest('button')) return;
+    
+    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    let clientX, clientY;
+    
+    if ('touches' in e) {
+      clientX = e.changedTouches[0].clientX;
+      clientY = e.changedTouches[0].clientY;
+    } else {
+      clientX = (e as React.MouseEvent).clientX;
+      clientY = (e as React.MouseEvent).clientY;
+    }
+    
+    const x = clientX - rect.left;
+    const width = rect.width;
+    const height = rect.height;
+    const y = clientY - rect.top;
+    
+    // 边缘区域用于翻页（左右30%），中间40%用于切换菜单
+    const leftZone = width * 0.3;
+    const rightZone = width * 0.7;
+    
+    // 只有在非UI显示状态下，点击中央才切换UI
+    if (x > leftZone && x < rightZone && y > height * 0.2 && y < height * 0.8) {
+      if (!showSettings && !showChapters) {
         setShowUI(v => !v);
       }
-    } else if (Math.abs(dx) > Math.abs(dy) && Math.abs(dx) > 50) {
-      if (dx > 0) prevPage(); else nextPage();
+    } else if (x <= leftZone) {
+      // 左侧：上一页/上一章
+      settings.pageMode === 'page' ? prevPage() : 
+        scrollContainerRef.current?.scrollBy({ top: -window.innerHeight * 0.9, behavior: 'smooth' });
+    } else if (x >= rightZone) {
+      // 右侧：下一页/下一章
+      settings.pageMode === 'page' ? nextPage() : 
+        scrollContainerRef.current?.scrollBy({ top: window.innerHeight * 0.9, behavior: 'smooth' });
     }
-    setTouchStart(null);
-  }, [touchStart, settings.pageMode, nextPage, prevPage]);
-  
-  // 滚动监听
-  const onScroll = useCallback((e: React.UIEvent<HTMLDivElement>) => {
-    const target = e.target as HTMLDivElement;
-    const scrollPercent = target.scrollTop / (target.scrollHeight - target.clientHeight);
-    const totalParagraphs = chapter.paragraphs.length;
-    const currentP = Math.floor(scrollPercent * totalParagraphs);
-    setCurrentParagraph(Math.min(currentP, totalParagraphs - 1));
-  }, [chapter]);
+  }, [settings.pageMode, showSettings, showChapters, nextPage, prevPage]);
   
   // 设置更新
   const updateSetting = useCallback(<K extends keyof ReaderSettings>(key: K, val: ReaderSettings[K]) => {
-    setSettings(s => ({ ...s, [key]: val }));
-    storage.saveSettings({ ...settings, [key]: val });
+    const newSettings = { ...settings, [key]: val };
+    setSettings(newSettings);
+    storage.saveSettings(newSettings);
+    // 重置页码计算
+    if (key === 'fontSize' || key === 'lineHeight') {
+      setCurrentPage(0);
+    }
   }, [settings]);
   
-  // 渲染内容样式
-  const contentStyle: React.CSSProperties = {
+  // 切换沉浸模式（非全屏，仅隐藏UI）
+  const toggleImmersive = useCallback(() => {
+    setIsImmersive(v => !v);
+    setShowUI(true); // 切换时先显示UI，方便用户操作
+  }, []);
+  
+  // 文本样式
+  const textStyle: React.CSSProperties = {
     fontSize: `${settings.fontSize}px`,
     fontFamily: settings.fontFamily,
     lineHeight: settings.lineHeight,
     letterSpacing: `${settings.letterSpacing}px`,
     textAlign: settings.textAlign,
     color: theme.text,
-    padding: '20px',
-    maxWidth: '800px',
-    margin: '0 auto',
-    WebkitTextSizeAdjust: '100%',
   };
   
-  if (!chapter) return <div className="flex items-center justify-center h-screen">加载中...</div>;
+  if (!chapter) return null;
   
   return (
-    <div className="fixed inset-0 z-50 flex flex-col overflow-hidden" style={{ backgroundColor: theme.bg }}>
-      {/* 顶部栏 */}
+    <div className="fixed inset-0 z-50 flex flex-col bg-[#f0f7ff] overflow-hidden" style={{ backgroundColor: theme.bg }}>
+      {/* 顶部栏 - 蓝白风格 */}
       <header 
-        className={`flex-none flex items-center justify-between px-4 h-14 border-b border-black/10 transition-transform duration-300 ${showUI ? 'translate-y-0' : '-translate-y-full'}`}
-        style={{ backgroundColor: `${theme.bg}ee`, backdropFilter: 'blur(10px)', color: theme.text }}
+        className={`flex-none h-14 border-b flex items-center justify-between px-4 transition-all duration-300 z-20 ${
+          showUI && !isImmersive ? 'opacity-100 translate-y-0' : 'opacity-0 -translate-y-full pointer-events-none'
+        }`}
+        style={{ 
+          backgroundColor: `${theme.bg}f0`, 
+          borderColor: theme.border,
+          color: theme.text,
+          backdropFilter: 'blur(12px)',
+          WebkitBackdropFilter: 'blur(12px)',
+        }}
       >
         <div className="flex items-center gap-3 flex-1 min-w-0">
-          <button onClick={onClose} className="p-2 -ml-2 active:scale-90 transition-transform">
-            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+          <button 
+            onClick={onClose} 
+            className="p-2 -ml-2 rounded-full hover:bg-black/5 active:scale-95 transition-all"
+          >
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
               <path d="M19 12H5M12 19l-7-7 7-7" />
             </svg>
           </button>
           <div className="flex-1 min-w-0">
-            <h1 className="text-sm font-semibold truncate">{title}</h1>
-            <p className="text-xs opacity-60 truncate">{chapter.title}</p>
+            <h1 className="text-sm font-bold truncate tracking-tight">{title}</h1>
+            <p className="text-xs opacity-60 truncate font-medium" style={{ color: theme.accent }}>
+              {chapter.title} · {currentChapter + 1}/{chapters.length}章
+            </p>
           </div>
         </div>
         
         <div className="flex items-center gap-1">
-          {isAutoReading && (
-            <span className="text-xs px-2 py-1 rounded-full bg-current/20 animate-pulse">
-              自动
-            </span>
-          )}
-          <button onClick={() => setShowChapters(true)} className="p-2 active:scale-90 transition-transform">
-            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" />
-              <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" />
+          <button 
+            onClick={() => setShowChapters(true)}
+            className="p-2 rounded-full hover:bg-black/5 active:scale-95 transition-all"
+            title="目录"
+          >
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z" />
+              <path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z" />
             </svg>
           </button>
-          <button onClick={toggleImmersive} className="p-2 active:scale-90 transition-transform">
-            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3" />
-            </svg>
+          <button 
+            onClick={toggleImmersive}
+            className="px-3 py-1.5 text-sm font-bold rounded-full hover:bg-black/5 active:scale-95 transition-all"
+            style={{ color: theme.accent }}
+          >
+            沉
           </button>
-          <button onClick={() => setShowSettings(true)} className="p-2 active:scale-90 transition-transform">
-            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <button 
+            onClick={() => setShowSettings(true)}
+            className="p-2 rounded-full hover:bg-black/5 active:scale-95 transition-all"
+            title="设置"
+          >
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <circle cx="12" cy="12" r="3" />
               <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z" />
             </svg>
@@ -394,131 +392,180 @@ export const TextReader: React.FC<TextReaderProps> = ({ content, title, bookId, 
         </div>
       </header>
       
-      {/* 阅读区域 */}
-      <div className="flex-1 relative overflow-hidden">
+      {/* 阅读区域 - 修复：确保能点击呼出菜单 */}
+      <div 
+        className="flex-1 relative overflow-hidden"
+        onClick={handleContainerClick}
+      >
+        {/* 滚动模式 - 修复：单章节内可滚动到底，通过底部按钮或自动加载切换章节 */}
         {settings.pageMode === 'scroll' ? (
           <div 
-            ref={scrollRef}
-            onScroll={onScroll}
-            onTouchStart={onTouchStart}
-            onTouchEnd={onTouchEnd}
+            ref={scrollContainerRef}
+            onScroll={handleScroll}
             className="h-full overflow-y-auto overflow-x-hidden"
             style={{ 
+              scrollBehavior: 'smooth',
               WebkitOverflowScrolling: 'touch',
-              scrollbarWidth: 'none',
-              msOverflowStyle: 'none',
             }}
           >
-            <style>{`div::-webkit-scrollbar { display: none; }`}</style>
-            <div style={contentStyle}>
-              {chapter.paragraphs.map((p, i) => (
-                <p 
-                  key={i} 
-                  data-idx={i}
-                  style={{ 
-                    marginBottom: `${settings.paragraphSpacing}em`,
-                    textIndent: settings.textAlign === 'justify' || settings.textAlign === 'left' ? '2em' : '0',
-                  }}
-                  className="break-words"
-                >
-                  {p}
-                </p>
-              ))}
-              <div className="h-20 flex items-center justify-center opacity-40 text-sm">
-                - 本章完 -
+            <style>{`
+              .reader-scroll::-webkit-scrollbar { display: none; }
+              .reader-scroll { scrollbar-width: none; -ms-overflow-style: none; }
+            `}</style>
+            <div className="reader-scroll h-full overflow-y-auto">
+              <div className="max-w-3xl mx-auto px-5 py-6 pb-20">
+                <h2 className="text-xl font-bold mb-6 text-center" style={{ color: theme.accent }}>
+                  {chapter.title}
+                </h2>
+                <div style={textStyle}>
+                  {chapter.paragraphs.map((p, i) => (
+                    <p 
+                      key={i} 
+                      className="mb-4 break-words"
+                      style={{ 
+                        textIndent: settings.textAlign !== 'center' ? '2em' : '0',
+                        marginBottom: `${settings.paragraphSpacing}em`,
+                      }}
+                    >
+                      {p}
+                    </p>
+                  ))}
+                </div>
+                
+                {/* 章节底部导航 */}
+                <div className="mt-12 flex items-center justify-between pt-8 border-t" style={{ borderColor: theme.border }}>
+                  <button 
+                    onClick={(e) => { e.stopPropagation(); prevChapter(); }}
+                    disabled={currentChapter === 0}
+                    className="px-4 py-2 rounded-lg text-sm font-medium disabled:opacity-30 transition-all active:scale-95"
+                    style={{ backgroundColor: `${theme.accent}15`, color: theme.accent }}
+                  >
+                    ← 上一章
+                  </button>
+                  <span className="text-sm opacity-50">本章结束</span>
+                  <button 
+                    onClick={(e) => { e.stopPropagation(); nextChapter(); }}
+                    disabled={currentChapter >= chapters.length - 1}
+                    className="px-4 py-2 rounded-lg text-sm font-medium disabled:opacity-30 transition-all active:scale-95"
+                    style={{ backgroundColor: `${theme.accent}15`, color: theme.accent }}
+                  >
+                    下一章 →
+                  </button>
+                </div>
               </div>
             </div>
           </div>
         ) : (
+          /* 翻页模式 - 修复：使用绝对定位确保每页显示完整 */
           <div 
-            ref={pageRef}
-            onTouchStart={onTouchStart}
-            onTouchEnd={onTouchEnd}
+            ref={pageContainerRef}
             className="h-full overflow-hidden relative"
           >
             <div 
-              className="h-full overflow-hidden"
-              style={{ 
+              ref={pageContentRef}
+              className="absolute inset-0 w-full"
+              style={{
                 transform: `translateY(-${currentPage * 100}%)`,
-                transition: 'transform 0.3s cubic-bezier(0.25, 0.1, 0.25, 1)',
+                transition: 'transform 0.35s cubic-bezier(0.4, 0.0, 0.2, 1)',
                 willChange: 'transform',
               }}
             >
-              <div style={contentStyle}>
-                {chapter.paragraphs.map((p, i) => (
-                  <p 
-                    key={i} 
-                    style={{ 
-                      marginBottom: `${settings.paragraphSpacing}em`,
-                      textIndent: settings.textAlign === 'justify' || settings.textAlign === 'left' ? '2em' : '0',
-                    }}
-                    className="break-words"
-                  >
-                    {p}
-                  </p>
-                ))}
+              <div className="h-full overflow-hidden">
+                <div className="max-w-3xl mx-auto px-6 py-8 h-full overflow-y-hidden">
+                  {currentPage === 0 && (
+                    <h2 className="text-xl font-bold mb-6 text-center" style={{ color: theme.accent }}>
+                      {chapter.title}
+                    </h2>
+                  )}
+                  <div style={textStyle} className="h-full">
+                    {chapter.paragraphs.map((p, i) => (
+                      <p 
+                        key={i} 
+                        className="mb-4 break-words"
+                        style={{ 
+                          textIndent: settings.textAlign !== 'center' ? '2em' : '0',
+                          marginBottom: `${settings.paragraphSpacing}em`,
+                        }}
+                      >
+                        {p}
+                      </p>
+                    ))}
+                  </div>
+                </div>
               </div>
             </div>
             
-            {/* 页码指示器 */}
-            <div className="absolute bottom-4 left-1/2 -translate-x-1/2 px-3 py-1 rounded-full text-xs bg-black/20 backdrop-blur text-white">
+            {/* 翻页模式页码 */}
+            <div className="absolute bottom-6 left-1/2 -translate-x-1/2 px-4 py-1.5 rounded-full text-xs font-bold bg-white/90 shadow-lg border" style={{ borderColor: theme.border, color: theme.accent }}>
               {currentPage + 1} / {totalPages}
             </div>
           </div>
         )}
         
-        {/* 沉浸模式遮罩（点击中央呼出菜单） */}
-        {isImmersive && !showUI && (
-          <div 
-            className="absolute inset-0 z-40"
-            onClick={() => setShowUI(true)}
-          />
+        {/* 中央点击区域提示（仅当UI隐藏时显示） */}
+        {!showUI && !showSettings && !showChapters && (
+          <div className="absolute inset-0 z-10" onClick={() => setShowUI(true)} />
         )}
       </div>
       
-      {/* 底部控制栏 */}
+      {/* 底部栏 - 蓝白风格 */}
       <footer 
-        className={`flex-none border-t border-black/10 transition-transform duration-300 ${showUI ? 'translate-y-0' : 'translate-y-full'}`}
-        style={{ backgroundColor: `${theme.bg}ee`, backdropFilter: 'blur(10px)', color: theme.text }}
+        className={`flex-none border-t transition-all duration-300 z-20 ${
+          showUI && !isImmersive ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-full pointer-events-none'
+        }`}
+        style={{ 
+          backgroundColor: `${theme.bg}f0`, 
+          borderColor: theme.border,
+          color: theme.text,
+          backdropFilter: 'blur(12px)',
+          WebkitBackdropFilter: 'blur(12px)',
+        }}
       >
-        <div className="px-4 py-3 flex items-center gap-4">
+        <div className="px-4 py-3 flex items-center gap-4 max-w-3xl mx-auto">
           <button 
             onClick={prevChapter}
             disabled={currentChapter === 0}
-            className="text-xs disabled:opacity-30 font-medium px-2 py-1"
+            className="text-xs font-bold px-3 py-1.5 rounded-full disabled:opacity-30 transition-all active:scale-95"
+            style={{ backgroundColor: `${theme.accent}15`, color: theme.accent }}
           >
             上一章
           </button>
           
           <div className="flex-1 flex flex-col gap-1">
-            <div className="flex justify-between text-xs opacity-60 px-1">
+            <div className="flex justify-between text-xs font-medium opacity-70 px-1">
               <span>{Math.round((currentChapter / Math.max(1, chapters.length - 1)) * 100)}%</span>
               <span>{currentChapter + 1}/{chapters.length}</span>
             </div>
-            <input 
-              type="range" 
-              min={0} 
-              max={chapters.length - 1} 
-              step={0.1}
-              value={currentChapter}
-              onChange={(e) => {
-                const ch = parseFloat(e.target.value);
-                const idx = Math.floor(ch);
-                if (idx !== currentChapter) goChapter(idx);
-              }}
-              className="w-full h-1 bg-current/20 rounded-lg appearance-none cursor-pointer"
-              style={{ 
-                backgroundImage: `linear-gradient(${theme.text}, ${theme.text})`,
-                backgroundSize: `${(currentChapter / Math.max(1, chapters.length - 1)) * 100}% 100%`,
-                backgroundRepeat: 'no-repeat',
-              }}
-            />
+            <div className="relative h-1.5 bg-gray-200 rounded-full overflow-hidden">
+              <div 
+                className="absolute left-0 top-0 h-full rounded-full transition-all duration-300"
+                style={{ 
+                  width: `${((currentChapter + (settings.pageMode === 'page' ? currentPage / Math.max(1, totalPages) : scrollProgress)) / chapters.length) * 100}%`,
+                  backgroundColor: theme.accent,
+                }}
+              />
+              {/* 可点击的进度条 */}
+              <input 
+                type="range" 
+                min={0} 
+                max={chapters.length - 1} 
+                step={0.1}
+                value={currentChapter}
+                onChange={(e) => {
+                  const ch = parseInt(e.target.value);
+                  if (ch !== currentChapter) goChapter(ch);
+                }}
+                className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+                onClick={(e) => e.stopPropagation()}
+              />
+            </div>
           </div>
           
           <button 
             onClick={nextChapter}
             disabled={currentChapter >= chapters.length - 1}
-            className="text-xs disabled:opacity-30 font-medium px-2 py-1"
+            className="text-xs font-bold px-3 py-1.5 rounded-full disabled:opacity-30 transition-all active:scale-95"
+            style={{ backgroundColor: `${theme.accent}15`, color: theme.accent }}
           >
             下一章
           </button>
@@ -527,31 +574,38 @@ export const TextReader: React.FC<TextReaderProps> = ({ content, title, bookId, 
       
       {/* 目录面板 */}
       {showChapters && (
-        <div className="absolute inset-0 z-50 bg-black/50 backdrop-blur-sm" onClick={() => setShowChapters(false)}>
+        <div className="absolute inset-0 z-50 flex">
+          <div className="absolute inset-0 bg-black/20 backdrop-blur-sm" onClick={() => setShowChapters(false)} />
           <div 
-            className="absolute left-0 top-0 bottom-0 w-80 max-w-[80vw] overflow-hidden flex flex-col animate-in slide-in-from-left duration-300"
-            style={{ backgroundColor: theme.bg, color: theme.text }}
-            onClick={e => e.stopPropagation()}
+            className="relative w-80 max-w-[85vw] h-full shadow-2xl transform transition-transform duration-300 animate-in slide-in-from-left"
+            style={{ backgroundColor: theme.bg }}
           >
-            <div className="p-4 border-b border-black/10 flex items-center justify-between">
-              <h2 className="font-bold text-lg">目录</h2>
-              <button onClick={() => setShowChapters(false)} className="p-2">
+            <div className="p-4 border-b flex items-center justify-between sticky top-0 z-10" style={{ borderColor: theme.border, backgroundColor: theme.bg }}>
+              <h2 className="font-bold text-lg" style={{ color: theme.accent }}>目录</h2>
+              <button onClick={() => setShowChapters(false)} className="p-2 rounded-full hover:bg-black/5">
                 <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                   <line x1="18" y1="6" x2="6" y2="18" />
                   <line x1="6" y1="6" x2="18" y2="18" />
                 </svg>
               </button>
             </div>
-            <div className="flex-1 overflow-y-auto">
+            <div className="overflow-y-auto h-[calc(100%-60px)] pb-safe">
               {chapters.map((ch, idx) => (
                 <button
                   key={idx}
                   onClick={() => goChapter(idx)}
-                  className={`w-full text-left px-4 py-3 border-b border-black/5 transition-colors ${
-                    currentChapter === idx ? 'bg-current/10 border-l-4 border-l-current' : 'border-l-4 border-l-transparent'
+                  className={`w-full text-left px-5 py-3.5 border-b transition-all active:scale-[0.98] ${
+                    currentChapter === idx 
+                      ? 'bg-blue-50 border-l-4' 
+                      : 'border-l-4 border-transparent hover:bg-black/[0.02]'
                   }`}
+                  style={{ 
+                    borderColor: theme.border,
+                    borderLeftColor: currentChapter === idx ? theme.accent : 'transparent',
+                    color: currentChapter === idx ? theme.accent : theme.text,
+                  }}
                 >
-                  <span className={`text-sm ${currentChapter === idx ? 'font-semibold' : 'opacity-80'}`}>
+                  <span className={`text-sm ${currentChapter === idx ? 'font-bold' : 'opacity-80'}`}>
                     {ch.title}
                   </span>
                 </button>
@@ -563,15 +617,15 @@ export const TextReader: React.FC<TextReaderProps> = ({ content, title, bookId, 
       
       {/* 设置面板 */}
       {showSettings && (
-        <div className="absolute inset-0 z-50 bg-black/50 backdrop-blur-sm" onClick={() => setShowSettings(false)}>
+        <div className="absolute inset-0 z-50 flex justify-end">
+          <div className="absolute inset-0 bg-black/20 backdrop-blur-sm" onClick={() => setShowSettings(false)} />
           <div 
-            className="absolute right-0 top-0 bottom-0 w-80 max-w-[80vw] overflow-y-auto animate-in slide-in-from-right duration-300"
-            style={{ backgroundColor: theme.bg, color: theme.text }}
-            onClick={e => e.stopPropagation()}
+            className="relative w-80 max-w-[85vw] h-full shadow-2xl overflow-y-auto"
+            style={{ backgroundColor: theme.bg }}
           >
-            <div className="p-4 border-b border-black/10 flex items-center justify-between sticky top-0 bg-inherit z-10">
-              <h2 className="font-bold text-lg">阅读设置</h2>
-              <button onClick={() => setShowSettings(false)} className="p-2">
+            <div className="p-4 border-b sticky top-0 z-10 flex items-center justify-between" style={{ borderColor: theme.border, backgroundColor: theme.bg }}>
+              <h2 className="font-bold text-lg" style={{ color: theme.accent }}>阅读设置</h2>
+              <button onClick={() => setShowSettings(false)} className="p-2 rounded-full hover:bg-black/5">
                 <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                   <line x1="18" y1="6" x2="6" y2="18" />
                   <line x1="6" y1="6" x2="18" y2="18" />
@@ -579,69 +633,75 @@ export const TextReader: React.FC<TextReaderProps> = ({ content, title, bookId, 
               </button>
             </div>
             
-            <div className="p-4 space-y-6">
+            <div className="p-5 space-y-6 pb-20">
               {/* 模式切换 */}
-              <div className="flex rounded-lg bg-black/5 p-1">
+              <div className="flex rounded-xl p-1.5" style={{ backgroundColor: `${theme.accent}10` }}>
                 <button
                   onClick={() => updateSetting('pageMode', 'scroll')}
-                  className={`flex-1 py-2 text-sm rounded-md transition-all ${settings.pageMode === 'scroll' ? 'bg-white shadow-sm font-medium' : 'opacity-60'}`}
+                  className={`flex-1 py-2.5 text-sm font-bold rounded-lg transition-all ${
+                    settings.pageMode === 'scroll' 
+                      ? 'bg-white shadow-sm text-blue-600' 
+                      : 'opacity-60'
+                  }`}
                 >
                   滚动模式
                 </button>
                 <button
                   onClick={() => updateSetting('pageMode', 'page')}
-                  className={`flex-1 py-2 text-sm rounded-md transition-all ${settings.pageMode === 'page' ? 'bg-white shadow-sm font-medium' : 'opacity-60'}`}
+                  className={`flex-1 py-2.5 text-sm font-bold rounded-lg transition-all ${
+                    settings.pageMode === 'page' 
+                      ? 'bg-white shadow-sm text-blue-600' 
+                      : 'opacity-60'
+                  }`}
                 >
                   翻页模式
                 </button>
               </div>
               
               {/* 字体大小 */}
-              <div className="space-y-2">
-                <div className="flex justify-between text-sm font-medium">
-                  <span>字体大小</span>
-                  <span>{settings.fontSize}px</span>
+              <div className="space-y-3">
+                <div className="flex justify-between items-center">
+                  <span className="text-sm font-bold">字体大小</span>
+                  <span className="text-xs px-2 py-1 rounded-full" style={{ backgroundColor: `${theme.accent}15`, color: theme.accent }}>
+                    {settings.fontSize}px
+                  </span>
                 </div>
-                <div className="flex items-center gap-2">
-                  <span className="text-xs opacity-60">A</span>
-                  <input 
-                    type="range" min="12" max="32" 
-                    value={settings.fontSize}
-                    onChange={(e) => updateSetting('fontSize', parseInt(e.target.value))}
-                    className="flex-1 h-2 bg-current/20 rounded-lg appearance-none"
-                    style={{ backgroundImage: `linear-gradient(${theme.text}, ${theme.text})`, backgroundSize: `${((settings.fontSize - 12) / 20) * 100}% 100%`, backgroundRepeat: 'no-repeat' }}
-                  />
-                  <span className="text-lg opacity-60">A</span>
-                </div>
+                <input 
+                  type="range" min="14" max="28" 
+                  value={settings.fontSize}
+                  onChange={(e) => updateSetting('fontSize', parseInt(e.target.value))}
+                  className="w-full h-2 rounded-lg appearance-none cursor-pointer"
+                  style={{ backgroundColor: `${theme.accent}20` }}
+                />
               </div>
               
               {/* 行间距 */}
-              <div className="space-y-2">
-                <div className="flex justify-between text-sm font-medium">
-                  <span>行间距</span>
-                  <span>{settings.lineHeight}</span>
+              <div className="space-y-3">
+                <div className="flex justify-between items-center">
+                  <span className="text-sm font-bold">行间距</span>
+                  <span className="text-xs opacity-60">{settings.lineHeight}</span>
                 </div>
                 <input 
-                  type="range" min="1.2" max="2.5" step="0.1"
+                  type="range" min="1.4" max="2.2" step="0.1"
                   value={settings.lineHeight}
                   onChange={(e) => updateSetting('lineHeight', parseFloat(e.target.value))}
-                  className="w-full h-2 bg-current/20 rounded-lg appearance-none"
-                  style={{ backgroundImage: `linear-gradient(${theme.text}, ${theme.text})`, backgroundSize: `${((settings.lineHeight - 1.2) / 1.3) * 100}% 100%`, backgroundRepeat: 'no-repeat' }}
+                  className="w-full h-2 rounded-lg appearance-none cursor-pointer"
+                  style={{ backgroundColor: `${theme.accent}20` }}
                 />
               </div>
               
               {/* 字体 */}
-              <div className="space-y-2">
-                <span className="text-sm font-medium">字体</span>
+              <div className="space-y-3">
+                <span className="text-sm font-bold">字体</span>
                 <div className="grid grid-cols-2 gap-2">
                   {FONTS.map(f => (
                     <button
                       key={f.name}
                       onClick={() => updateSetting('fontFamily', f.value)}
-                      className={`px-3 py-2 text-sm rounded-lg border transition-all ${
+                      className={`px-3 py-2.5 text-sm rounded-lg border-2 transition-all active:scale-95 ${
                         settings.fontFamily === f.value 
-                          ? 'border-current bg-current/10 font-medium' 
-                          : 'border-transparent bg-black/5'
+                          ? 'border-blue-500 bg-blue-50 text-blue-600 font-bold' 
+                          : 'border-transparent bg-gray-100'
                       }`}
                       style={{ fontFamily: f.value }}
                     >
@@ -652,83 +712,56 @@ export const TextReader: React.FC<TextReaderProps> = ({ content, title, bookId, 
               </div>
               
               {/* 主题 */}
-              <div className="space-y-2">
-                <span className="text-sm font-medium">背景主题</span>
+              <div className="space-y-3">
+                <span className="text-sm font-bold">主题颜色</span>
                 <div className="grid grid-cols-4 gap-3">
                   {THEMES.map((t, i) => (
                     <button
                       key={i}
                       onClick={() => updateSetting('theme', i)}
-                      className={`aspect-square rounded-xl border-2 transition-all flex items-center justify-center ${
-                        settings.theme === i ? 'border-current scale-110 shadow-lg' : 'border-transparent'
+                      className={`aspect-square rounded-xl border-2 transition-all active:scale-95 flex flex-col items-center justify-center gap-1 ${
+                        settings.theme === i ? 'border-blue-500 scale-110 shadow-lg' : 'border-transparent'
                       }`}
                       style={{ backgroundColor: t.bg }}
                     >
-                      <span className="text-xs font-medium" style={{ color: t.text }}>Aa</span>
+                      <span className="text-lg font-bold" style={{ color: t.accent }}>A</span>
+                      <span className="text-[10px]" style={{ color: t.text }}>{t.name}</span>
                     </button>
                   ))}
                 </div>
               </div>
               
               {/* 对齐 */}
-              <div className="space-y-2">
-                <span className="text-sm font-medium">文字对齐</span>
-                <div className="flex rounded-lg bg-black/5 p-1">
-                  {[
-                    { name: '左对齐', value: 'left' as const },
-                    { name: '两端对齐', value: 'justify' as const }
-                  ].map(a => (
-                    <button
-                      key={a.value}
-                      onClick={() => updateSetting('textAlign', a.value)}
-                      className={`flex-1 py-2 text-sm rounded-md transition-all ${settings.textAlign === a.value ? 'bg-white shadow-sm font-medium' : 'opacity-60'}`}
-                    >
-                      {a.name}
-                    </button>
-                  ))}
-                </div>
-              </div>
-              
-              {/* 自动阅读 */}
-              <div className="pt-4 border-t border-black/10 space-y-3">
-                <div className="flex items-center justify-between">
-                  <span className="text-sm font-medium">自动阅读</span>
-                  <button 
-                    onClick={() => setIsAutoReading(!isAutoReading)}
-                    className={`w-12 h-6 rounded-full transition-colors relative ${isAutoReading ? 'bg-current' : 'bg-black/20'}`}
-                    style={{ backgroundColor: isAutoReading ? theme.text : undefined }}
+              <div className="space-y-3">
+                <span className="text-sm font-bold">文字对齐</span>
+                <div className="flex rounded-xl p-1.5" style={{ backgroundColor: `${theme.accent}10` }}>
+                  <button
+                    onClick={() => updateSetting('textAlign', 'left')}
+                    className={`flex-1 py-2 text-sm rounded-lg transition-all ${
+                      settings.textAlign === 'left' ? 'bg-white shadow-sm font-bold' : 'opacity-60'
+                    }`}
                   >
-                    <span className={`absolute top-1 left-1 w-4 h-4 rounded-full bg-white transition-transform ${isAutoReading ? 'translate-x-6' : ''}`} />
+                    左对齐
+                  </button>
+                  <button
+                    onClick={() => updateSetting('textAlign', 'justify')}
+                    className={`flex-1 py-2 text-sm rounded-lg transition-all ${
+                      settings.textAlign === 'justify' ? 'bg-white shadow-sm font-bold' : 'opacity-60'
+                    }`}
+                  >
+                    两端对齐
                   </button>
                 </div>
-                
-                {isAutoReading && (
-                  <div className="space-y-2">
-                    <span className="text-xs opacity-60">速度</span>
-                    <input 
-                      type="range" min="50" max="500" 
-                      value={autoReadSpeed}
-                      onChange={(e) => setAutoReadSpeed(parseInt(e.target.value))}
-                      className="w-full h-2 bg-current/20 rounded-lg appearance-none"
-                      style={{ direction: 'rtl' }}
-                    />
-                    <div className="flex justify-between text-xs opacity-60">
-                      <span>快</span>
-                      <span>慢</span>
-                    </div>
-                  </div>
-                )}
               </div>
               
               {/* 自动隐藏 */}
-              <div className="flex items-center justify-between pt-2">
-                <span className="text-sm font-medium">自动隐藏工具栏</span>
+              <div className="flex items-center justify-between p-4 rounded-xl" style={{ backgroundColor: `${theme.accent}10` }}>
+                <span className="text-sm font-bold">自动隐藏工具栏</span>
                 <button 
                   onClick={() => updateSetting('autoHideHeader', !settings.autoHideHeader)}
-                  className={`w-12 h-6 rounded-full transition-colors relative ${settings.autoHideHeader ? 'bg-current' : 'bg-black/20'}`}
-                  style={{ backgroundColor: settings.autoHideHeader ? theme.text : undefined }}
+                  className={`w-12 h-6 rounded-full transition-colors relative ${settings.autoHideHeader ? 'bg-blue-500' : 'bg-gray-300'}`}
                 >
-                  <span className={`absolute top-1 left-1 w-4 h-4 rounded-full bg-white transition-transform ${settings.autoHideHeader ? 'translate-x-6' : ''}`} />
+                  <span className={`absolute top-1 left-1 w-4 h-4 rounded-full bg-white transition-transform shadow-sm ${settings.autoHideHeader ? 'translate-x-6' : ''}`} />
                 </button>
               </div>
             </div>
