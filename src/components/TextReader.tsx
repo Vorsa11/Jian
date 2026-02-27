@@ -1,79 +1,47 @@
-import { useState, useEffect, useRef, useMemo } from 'react';
-import {
-  ChevronLeft,
-  Settings,
-  BookOpen,
-  List,
-  Play,
-  Pause,
-  Clock,
-  ScrollText,
-  AlignLeft,
-  AlignCenter,
-  AlignRight,
-  Monitor,
-  ChevronUp,
-  ChevronDown,
-  X,
-} from 'lucide-react';
-import { Button } from '@/components/ui/button';
-import { Slider } from '@/components/ui/slider';
-import { Switch } from '@/components/ui/switch';
+import React, {
+  useState,
+  useEffect,
+  useRef,
+  useMemo,
+  useCallback,
+} from 'react';
+import { useVirtualizer } from '@tanstack/react-virtual';
 
-// =============== 🔧 修复点1：增强文本清洗函数，避免误删有效内容 ===============
-// 原始正则可能因编码错误将中文字符识别为“符号行”而删除
-// 改进：放宽过滤条件，仅移除明显无意义的短纯符号行
-function cleanNovelContent(rawText: string): string {
-  if (!rawText) return '';
-
-  let text = rawText;
-
-  // 移除常见广告、水印、声明（保持原逻辑）
-  const adPatterns = [
-    /本书为八零电子书网.*?存储服务/gi,
-    /找好书，看好书，与大家分享好书，请加QQ群/gi,
-    /八零电子书\s*www\.txt80\.com/gi,
-    /小说下载尽在\s*http:\/\/www\.txt80\.com/gi,
-    /手机访问\s*m\.txt80\.com/gi,
-    /【本作品来自互联网.*?】/gi,
-    /内容版权归作者所有/gi,
-    /用户上传之内容开始/gi,
-    /---------------------------/g,
-    /★—+★/g,
-    /丨[^\n]*?丨/g,
-    /\s*http[s]?:\/\/[^\s]+/gi,
-    /QQ群[:：]?\s*\d+/gi,
-  ];
-
-  adPatterns.forEach(pattern => {
-    text = text.replace(pattern, '');
-  });
-
-  // 合并多余空行
-  text = text.replace(/\n{3,}/g, '\n\n');
-
-  // 清理每行首尾空格
-  text = text
-    .split('\n')
-    .map(line => line.trim())
-    .join('\n');
-
-  // ✅ 优化：仅过滤长度≤5且不含中英文的行，防止误删乱码但实际有效的段落
-  text = text
-    .split('\n')
-    .filter(line => {
-      if (line === '') return true;
-      return /[a-zA-Z\u4e00-\u9fa5]/.test(line) || line.length > 5;
-    })
-    .join('\n');
-
-  // 移除开头空白
-  text = text.replace(/^\s*\n/, '');
-
-  return text;
+// ============================== 🔧 类型定义 ==============================
+interface Chapter {
+  title: string;
+  index: number;
+  startLine: number;
+  endLine: number;
+  lines: string[];
 }
-// ==============================================================================
 
+interface ReaderSettings {
+  fontSize: number;
+  fontFamily: string;
+  theme: number;
+  pageMode: 'scroll' | 'page';
+  lineHeight: number;
+  letterSpacing: number;
+  textAlign: 'left' | 'center' | 'justify';
+  paragraphSpacing: number;
+  autoHideHeader: boolean;
+}
+
+interface Progress {
+  chapter: number;
+  lineInChapter: number;
+  timestamp: number;
+}
+
+interface TextReaderProps {
+  content: string;
+  title: string;
+  bookId: string;
+  onClose: () => void;
+}
+
+// ============================== 🎨 主题与配置 ==============================
 const FONTS = [
   { name: '系统默认', value: 'system-ui, -apple-system, sans-serif' },
   { name: '宋体', value: '"Noto Serif SC", "SimSun", serif' },
@@ -95,46 +63,60 @@ const THEMES = [
 ];
 
 const PAGE_MODES = [
-  { name: '滚动', value: 'scroll', icon: ScrollText },
-  { name: '翻页', value: 'page', icon: BookOpen },
+  { name: '滚动', value: 'scroll' },
+  { name: '翻页', value: 'page' },
 ];
 
 const TEXT_ALIGNS = [
-  { name: '左对齐', value: 'left', icon: AlignLeft },
-  { name: '居中', value: 'center', icon: AlignCenter },
-  { name: '两端对齐', value: 'justify', icon: AlignRight },
+  { name: '左对齐', value: 'left' },
+  { name: '居中', value: 'center' },
+  { name: '两端对齐', value: 'justify' },
 ];
 
-interface TextReaderProps {
-  content: string;
-  title: string;
-  bookId: string;
-  onClose: () => void;
-}
+// ============================== 🛠 工具函数 ==============================
 
-interface ReaderSettings {
-  fontSize: number;
-  fontFamily: string;
-  theme: number;
-  pageMode: 'scroll' | 'page';
-  lineHeight: number;
-  letterSpacing: number;
-  textAlign: 'left' | 'center' | 'justify';
-  paragraphSpacing: number;
-  autoHideHeader: boolean;
-}
+/**
+ * 清理小说内容，移除广告、多余换行等
+ */
+function cleanNovelContent(rawText: string): string {
+  if (!rawText) return '';
 
-interface Chapter {
-  title: string;
-  index: number;
-  startLine: number;
-  endLine: number;
-  lines: string[];
+  let text = rawText;
+
+  const adPatterns = [
+    /本书为八零电子书网.*?存储服务/gi,
+    /找好书，看好书，与大家分享好书，请加QQ群/gi,
+    /八零电子书\s*www\.txt80\.com/gi,
+    /小说下载尽在\s*http:\/\/www\.txt80\.com/gi,
+    /手机访问\s*m\.txt80\.com/gi,
+    /【本作品来自互联网.*?】/gi,
+    /内容版权归作者所有/gi,
+    /用户上传之内容开始/gi,
+    /---------------------------/g,
+    /★—+★/g,
+    /丨[^\\n]*?丨/g,
+    /\s*http[s]?:\/\/[^\s]+/gi,
+    /QQ群[:：]?\s*\d+/gi,
+  ];
+
+  adPatterns.forEach((pattern) => {
+    text = text.replace(pattern, '');
+  });
+
+  text = text.replace(/\n{3,}/g, '\n\n');
+  text = text.split('\n').map(line => line.trim()).join('\n');
+
+  // 过滤无效短行（避免误删有效中文）
+  text = text.split('\n').filter(line => {
+    if (line === '') return true;
+    return /[a-zA-Z\u4e00-\u9fa5]/.test(line) || line.length > 5;
+  }).join('\n');
+
+  return text.trim();
 }
 
 /**
-
- * 解析文本内容为章节结构
+ * 解析章节结构
  */
 function parseChapters(text: string): Chapter[] {
   if (!text) return [{ title: '正文', index: 0, startLine: 0, endLine: 0, lines: [] }];
@@ -162,7 +144,7 @@ function parseChapters(text: string): Chapter[] {
     }
   }
 
-  const chapters: Chapter[] = rawChapters.map((c, i) => {
+  return rawChapters.map((c, i) => {
     const endLine = i < rawChapters.length - 1 ? rawChapters[i + 1].startLine - 1 : allLines.length - 1;
     return {
       title: c.title,
@@ -172,52 +154,43 @@ function parseChapters(text: string): Chapter[] {
       lines: allLines.slice(c.startLine, endLine + 1),
     };
   });
-
-  return chapters;
 }
 
 /**
-
- * ✅ 增强版读取逻辑：支持安全降级与类型校验
+ * 自动检测并解码文本编码（支持UTF-8、GBK、GB18030）
  */
-function getSavedProgress(bookId: string): { chapter: number; lineInChapter: number } {
-  try {
-    const saved = localStorage.getItem(`reader-progress-v5-${bookId}`);
-    if (saved) {
-      const parsed = JSON.parse(saved);
-      return {
-        chapter: typeof parsed.chapter === 'number' ? Math.max(0, parsed.chapter) : 0,
-        lineInChapter: typeof parsed.lineInChapter === 'number' ? Math.max(0, parsed.lineInChapter) : 0,
-      };
+function detectAndDecode(buffer: ArrayBuffer): string {
+  const encodings = ['utf-8', 'gbk', 'gb18030'] as const;
+  const decoder = new TextDecoder();
+
+  // 尝试使用BOM检测UTF-8
+  const uint8Array = new Uint8Array(buffer);
+  if (uint8Array.length >= 3 && uint8Array[0] === 0xef && uint8Array[1] === 0xbb && uint8Array[2] === 0xbf) {
+    return decoder.decode(buffer);
+  }
+
+  // 尝试多种编码
+  for (const encoding of encodings) {
+    try {
+      const decoder = new TextDecoder(encoding, { fatal: true });
+      return decoder.decode(buffer);
+    } catch (e) {
+      continue;
     }
-  } catch (e) {
-    console.warn(`Failed to read progress for ${bookId}`, e);
   }
-  return { chapter: 0, lineInChapter: 0 };
+
+  // 最终降级方案
+  return decoder.decode(buffer);
 }
 
 /**
-
- * ✅ 安全写入封装：捕获异常并提供 fallback
- */
-function saveProgress(bookId: string, chapter: number, lineInChapter: number) {
-  try {
-    localStorage.setItem(`reader-progress-v5-${bookId}`, JSON.stringify({ chapter, lineInChapter }));
-  } catch (e) {
-    console.error(`Failed to save progress for ${bookId}`, e);
-  }
-}
-
-/**
-
- * 🔧 修复点2: 强制使用默认主题（theme=0），除非用户明确更改过
- * 防止 localStorage 残留深色主题导致“一打开就是黑底”
+ * 加载本地设置
  */
 function loadSettings(): ReaderSettings {
   const defaults: ReaderSettings = {
     fontSize: 18,
     fontFamily: FONTS[0].value,
-    theme: 0, // 默认白底
+    theme: 0,
     pageMode: 'scroll',
     lineHeight: 1.75,
     letterSpacing: 0.3,
@@ -225,78 +198,97 @@ function loadSettings(): ReaderSettings {
     paragraphSpacing: 1.2,
     autoHideHeader: true,
   };
+
   try {
-    const saved = localStorage.getItem('text-reader-settings');
+    const saved = localStorage.getItem('text-reader-settings-v2');
     if (saved) {
       const parsed = JSON.parse(saved);
-      if (parsed.theme === undefined || parsed.theme === null) {
-        parsed.theme = 0;
-      }
+      if (parsed.theme == null) parsed.theme = 0;
       return { ...defaults, ...parsed };
     }
-  } catch {}
+  } catch (e) {
+    console.warn('Failed to load settings', e);
+  }
   return defaults;
 }
 
+/**
+ * 保存设置到localStorage
+ */
 function saveSettings(settings: ReaderSettings) {
   try {
-    localStorage.setItem('text-reader-settings', JSON.stringify(settings));
-  } catch {}
+    localStorage.setItem('text-reader-settings-v2', JSON.stringify(settings));
+  } catch (e) {
+    console.error('Failed to save settings', e);
+  }
 }
 
 /**
-
- * 🔧 修复点3: 修正 extractLinesFromContent 边界处理，防止越界与截断乱码
+ * 获取书籍阅读进度
  */
-const extractLinesFromContent = (content: string, start: number, end: number): string[] => {
-  if (start >= content.length) return [];
-  if (end > content.length) end = content.length;
-
-  let startPos = 0;
-  if (start > 0) {
-    let searchPos = start;
-    while (searchPos > 0 && content.charAt(searchPos - 1) !== '\n') {
-      searchPos--;
+function getSavedProgress(bookId: string): Progress {
+  try {
+    const saved = localStorage.getItem(`reader-progress-v6-${bookId}`);
+    if (saved) {
+      const parsed = JSON.parse(saved);
+      return {
+        chapter: typeof parsed.chapter === 'number' ? Math.max(0, parsed.chapter) : 0,
+        lineInChapter: typeof parsed.lineInChapter === 'number' ? Math.max(0, parsed.lineInChapter) : 0,
+        timestamp: Date.now(),
+      };
     }
-    startPos = searchPos;
+  } catch (e) {
+    console.warn(`Failed to read progress for ${bookId}`, e);
   }
+  return { chapter: 0, lineInChapter: 0, timestamp: Date.now() };
+}
 
-  let endPos = content.length;
-  if (end < content.length) {
-    let searchPos = end;
-    while (searchPos < content.length && content.charAt(searchPos) !== '\n') {
-      searchPos++;
+/**
+ * 保存阅读进度
+ */
+function saveProgress(bookId: string, progress: Omit<Progress, 'timestamp'>) {
+  try {
+    const data = { ...progress, timestamp: Date.now() };
+    localStorage.setItem(`reader-progress-v6-${bookId}`, JSON.stringify(data));
+  } catch (e) {
+    console.error(`Failed to save progress for ${bookId}`, e);
+  }
+}
+
+// ============================== 📖 主组件 ==============================
+export function TextReader({ content: rawContent, title, bookId, onClose }: TextReaderProps) {
+  // ============================== 🔐 自动编码转换层 ==============================
+  const decodedContent = useMemo(() => {
+    try {
+      const encoder = new TextEncoder();
+      const buffer = encoder.encode(rawContent);
+      return detectAndDecode(buffer.buffer);
+    } catch (e) {
+      console.warn('Encoding detection failed, using raw content', e);
+      return rawContent;
     }
-    endPos = searchPos + 1;
-  }
+  }, [rawContent]);
 
-  const segment = content.substring(startPos, endPos);
-  const lines = segment.split('\n');
-  const skipLines = start - startPos;
-  const result = lines.slice(skipLines, skipLines + (end - start)).filter(line => line !== undefined);
-  return result;
-};
-
-export function TextReader({ content, title, bookId, onClose }: TextReaderProps) {
-  // =============== 🔧 修复点4：建议外部统一处理编码，组件内假设输入已正确解码 ===============
-  // 实际应用中应在 FileReader 或 fetch 层使用 TextDecoder 自动识别 GBK/UTF-8 等编码
-  const cleanedContent = useMemo(() => cleanNovelContent(content), [content]);
-
-  const isContentEmpty = !cleanedContent || cleanedContent.trim().length === 0;
+  const cleanedContent = useMemo(() => cleanNovelContent(decodedContent), [decodedContent]);
+  const isContentEmpty = !cleanedContent || cleanedContent.length === 0;
 
   if (isContentEmpty) {
     return (
       <div className="fixed inset-0 z-50 flex items-center justify-center bg-background">
         <div className="text-center p-6 max-w-md">
-          <p className="text-muted-foreground mb-4">
-            {cleanedContent ? '文件内容为空或仅包含空白字符' : '未加载到内容'}
-          </p>
-          <Button onClick={onClose} className="mt-4">返回</Button>
+          <p className="text-muted-foreground mb-4">文件内容为空或无法解析</p>
+          <button
+            onClick={onClose}
+            className="px-4 py-2 bg-primary text-primary-foreground rounded-md hover:bg-primary/90 transition-colors"
+          >
+            返回
+          </button>
         </div>
       </div>
     );
   }
 
+  // ============================== ⚙️ 状态管理 ==============================
   const [settings, setSettings] = useState<ReaderSettings>(loadSettings());
   const [currentChapter, setCurrentChapter] = useState(0);
   const [lineInChapter, setLineInChapter] = useState(0);
@@ -310,18 +302,14 @@ export function TextReader({ content, title, bookId, onClose }: TextReaderProps)
 
   const normalContainerRef = useRef<HTMLDivElement>(null);
   const immersiveContainerRef = useRef<HTMLDivElement>(null);
-  const autoReadRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const headerTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const parentRef = useRef<HTMLDivElement>(null); // 替代 listRef，作为虚拟滚动容器
+  const autoReadRef = useRef<number | null>(null);
+  const headerTimeoutRef = useRef<number | null>(null);
   const touchStartX = useRef(0);
   const touchStartY = useRef(0);
   const hasInitialized = useRef(false);
-  const savedScrollPosition = useRef(0);
-  const chapterRefs = useRef<(HTMLDivElement | null)[]>([]);
-  const isScrolling = useRef(false);
-  const scrollTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  const chapters = useMemo(() => parseChapters(cleanedContent), [cleanedContent]);
   const currentTheme = THEMES[settings.theme] || THEMES[0];
+  const chapters = useMemo(() => parseChapters(cleanedContent), [cleanedContent]);
 
   const currentChapterData = chapters[currentChapter] || chapters[0];
   const totalLinesInChapter = currentChapterData?.lines.length || 0;
@@ -332,11 +320,7 @@ export function TextReader({ content, title, bookId, onClose }: TextReaderProps)
   const globalLineIndex = linesBeforeCurrent + lineInChapter;
   const progressPercent = Math.round((globalLineIndex / Math.max(1, totalLinesAll)) * 100);
 
-  const linesPerPage = 25;
-  const totalPages = Math.max(1, Math.ceil(totalLinesInChapter / linesPerPage));
-  const currentPage = Math.floor(lineInChapter / linesPerPage);
-  const currentPageKey = `${currentChapter}-${currentPage}`;
-
+  // ============================== 📌 初始化与进度恢复 ==============================
   useEffect(() => {
     if (hasInitialized.current) return;
     hasInitialized.current = true;
@@ -345,37 +329,43 @@ export function TextReader({ content, title, bookId, onClose }: TextReaderProps)
     if (saved.chapter >= 0 && saved.chapter < chapters.length) {
       setCurrentChapter(saved.chapter);
       const chapter = chapters[saved.chapter];
-      const maxLine = Math.max(0, chapter.lines.length - 1);
+      const maxLine = Math.max(0, (chapter?.lines.length || 1) - 1);
       setLineInChapter(Math.min(saved.lineInChapter, maxLine));
     } else if (chapters.length > 0) {
-      // ✅ 自动降级：若进度越界，则跳转至最后一章开头
       setCurrentChapter(chapters.length - 1);
       setLineInChapter(0);
     }
-  }, [bookId, chapters.length]);
+  }, [bookId, chapters]);
 
+  // 定时保存进度（防高频写入）
   useEffect(() => {
-    const update = () => {
-      const now = new Date();
-      setCurrentTime(now.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }));
-    };
+    const save = () => saveProgress(bookId, { chapter: currentChapter, lineInChapter });
+    const id = setTimeout(save, 500); // 节流处理
+    return () => clearTimeout(id);
+  }, [currentChapter, lineInChapter, bookId]);
+
+  // 页面卸载前强制保存
+  useEffect(() => {
+    const handleUnload = () => saveProgress(bookId, { chapter: currentChapter, lineInChapter });
+    window.addEventListener('beforeunload', handleUnload);
+    return () => window.removeEventListener('beforeunload', handleUnload);
+  }, [bookId, currentChapter, lineInChapter]);
+
+  // ============================== 🕒 时间更新 ==============================
+  useEffect(() => {
+    const update = () => setCurrentTime(new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }));
     update();
     const interval = setInterval(update, 60000);
     return () => clearInterval(interval);
   }, []);
 
-  useEffect(() => {
-    saveProgress(bookId, currentChapter, lineInChapter);
-  }, [currentChapter, lineInChapter, bookId]);
-
+  // ============================== 📼 自动阅读 ==============================
   useEffect(() => {
     if (isAutoReading) {
-      autoReadRef.current = setInterval(() => {
+      autoReadRef.current = window.setInterval(() => {
         if (settings.pageMode === 'scroll') {
           const activeContainer = isImmersive ? immersiveContainerRef.current : normalContainerRef.current;
-          if (activeContainer) {
-            activeContainer.scrollTop += 2;
-          }
+          if (activeContainer) activeContainer.scrollTop += 2;
         } else {
           goToNext();
         }
@@ -386,17 +376,19 @@ export function TextReader({ content, title, bookId, onClose }: TextReaderProps)
     };
   }, [isAutoReading, autoReadSpeed, settings.pageMode, lineInChapter, isImmersive]);
 
+  // ============================== ⚙️ 设置持久化 ==============================
   useEffect(() => {
     saveSettings(settings);
   }, [settings]);
 
+  // ============================== 👁️ 自动隐藏顶栏 ==============================
   useEffect(() => {
     if (!settings.autoHideHeader || isImmersive) return;
 
     const show = () => {
       setShowHeader(true);
       if (headerTimeoutRef.current) clearTimeout(headerTimeoutRef.current);
-      headerTimeoutRef.current = setTimeout(() => setShowHeader(false), 3000);
+      headerTimeoutRef.current = window.setTimeout(() => setShowHeader(false), 3000);
     };
 
     show();
@@ -415,6 +407,7 @@ export function TextReader({ content, title, bookId, onClose }: TextReaderProps)
     };
   }, [settings.autoHideHeader, isImmersive]);
 
+  // ============================== ⌨️ 键盘控制 ==============================
   useEffect(() => {
     const handleKey = (e: KeyboardEvent) => {
       if (showSettings || showChapters) return;
@@ -444,44 +437,65 @@ export function TextReader({ content, title, bookId, onClose }: TextReaderProps)
     };
     window.addEventListener('keydown', handleKey);
     return () => window.removeEventListener('keydown', handleKey);
-  }, [showSettings, showChapters, lineInChapter, currentChapter, chapters.length, settings.pageMode, isImmersive]);
+  }, [showSettings, showChapters, chapters.length, settings.pageMode, isImmersive]);
 
-  const handleScroll = () => {
-    if (settings.pageMode !== 'scroll') return;
+  // ============================== 📐 虚拟滚动计算 ==============================
+  const getItemHeight = useCallback(
+    (index: number): number => {
+      const chapterIndex = findChapterByLineIndex(index);
+      if (chapterIndex === -1) return 60;
+      return Math.max(30, settings.fontSize * settings.lineHeight + settings.paragraphSpacing * 16);
+    },
+    [settings.fontSize, settings.lineHeight, settings.paragraphSpacing]
+  );
 
-    isScrolling.current = true;
-    if (scrollTimeout.current) clearTimeout(scrollTimeout.current);
-
-    const activeContainer = isImmersive ? immersiveContainerRef.current : normalContainerRef.current;
-    if (!activeContainer) return;
-
-    const scrollTop = activeContainer.scrollTop;
-    const containerHeight = activeContainer.clientHeight;
-    const scrollCenter = scrollTop + containerHeight / 3;
-
-    for (let i = 0; i < chapters.length; i++) {
-      const chapterEl = chapterRefs.current[i];
-      if (!chapterEl) continue;
-
-      const chapterTop = chapterEl.offsetTop;
-      const chapterBottom = chapterTop + chapterEl.offsetHeight;
-
-      if (scrollCenter >= chapterTop && scrollCenter < chapterBottom) {
-        if (currentChapter !== i) {
-          setCurrentChapter(i);
-        }
-        break;
+  const findChapterByLineIndex = useCallback(
+    (globalLineIndex: number): number => {
+      let accumulated = 0;
+      for (let i = 0; i < chapters.length; i++) {
+        accumulated += chapters[i].lines.length;
+        if (accumulated > globalLineIndex) return i;
       }
-    }
+      return chapters.length - 1;
+    },
+    [chapters]
+  );
 
-    scrollTimeout.current = setTimeout(() => {
-      isScrolling.current = false;
-    }, 150);
-  };
+  // ✅ 重写 renderRow：只接收 index
+  const renderRow = useCallback(
+    (index: number) => {
+      const chapterIndex = findChapterByLineIndex(index);
+      const chapter = chapters[chapterIndex];
+      if (!chapter) return null;
 
+      const lineIndex = index - chapters.slice(0, chapterIndex).reduce((sum, c) => sum + c.lines.length, 0);
+      const line = chapter.lines[lineIndex] || '';
+
+      return (
+        <p
+          style={{
+            fontSize: `${settings.fontSize}px`,
+            fontFamily: settings.fontFamily,
+            lineHeight: settings.lineHeight,
+            letterSpacing: `${settings.letterSpacing}px`,
+            textAlign: settings.textAlign,
+            color: currentTheme.text,
+            marginBottom: `${settings.paragraphSpacing}em`,
+            padding: '0 1rem',
+          }}
+          className="break-words"
+        >
+          {line.trim() || '\u00A0'}
+        </p>
+      );
+    },
+    [chapters, settings, currentTheme, findChapterByLineIndex]
+  );
+
+  // ============================== 🚪 导航控制 ==============================
   const goToNext = () => {
     if (settings.pageMode === 'page') {
-      const nextLine = lineInChapter + linesPerPage;
+      const nextLine = lineInChapter + 25;
       if (nextLine >= totalLinesInChapter && currentChapter < chapters.length - 1) {
         setCurrentChapter(prev => prev + 1);
         setLineInChapter(0);
@@ -498,7 +512,7 @@ export function TextReader({ content, title, bookId, onClose }: TextReaderProps)
 
   const goToPrev = () => {
     if (settings.pageMode === 'page') {
-      const prevLine = lineInChapter - linesPerPage;
+      const prevLine = lineInChapter - 25;
       if (prevLine < 0 && currentChapter > 0) {
         setCurrentChapter(currentChapter - 1);
         setLineInChapter(0);
@@ -515,77 +529,24 @@ export function TextReader({ content, title, bookId, onClose }: TextReaderProps)
 
   const goToChapter = (index: number) => {
     if (index < 0 || index >= chapters.length) return;
-
     setCurrentChapter(index);
     setLineInChapter(0);
     setShowChapters(false);
-
-    requestAnimationFrame(() => {
-      const activeContainer = isImmersive 
-        ? immersiveContainerRef.current 
-        : normalContainerRef.current;
-
-      if (!activeContainer) return;
-
-      if (settings.pageMode === 'page') {
-        activeContainer.scrollTop = 0;
-      } else if (settings.pageMode === 'scroll') {
-        const chapterEl = chapterRefs.current[index];
-        if (chapterEl) {
-          activeContainer.scrollTo({
-            top: chapterEl.offsetTop,
-            behavior: 'smooth'
-          });
-        }
-      }
-    });
   };
 
   const toggleImmersive = () => {
     const newImmersive = !isImmersive;
-    const currentContainer = newImmersive ? normalContainerRef.current : immersiveContainerRef.current;
-
-    if (currentContainer) {
-      savedScrollPosition.current = currentContainer.scrollTop;
-    }
-
     setIsImmersive(newImmersive);
-
     if (newImmersive) {
       setShowHeader(false);
-      if (!document.fullscreenElement) {
-        document.documentElement.requestFullscreen().catch(() => {});
-      }
+      document.documentElement.requestFullscreen().catch(err => console.warn('Fullscreen failed:', err));
     } else {
       setShowHeader(true);
-      if (document.fullscreenElement) {
-        document.exitFullscreen().catch(() => {});
-      }
+      if (document.fullscreenElement) document.exitFullscreen().catch(err => console.warn('Exit fullscreen failed:', err));
     }
   };
 
-  useEffect(() => {
-    const targetContainer = isImmersive ? immersiveContainerRef.current : normalContainerRef.current;
-    if (targetContainer && savedScrollPosition.current > 0) {
-      requestAnimationFrame(() => {
-        targetContainer.scrollTop = savedScrollPosition.current;
-      });
-    }
-  }, [isImmersive]);
-
-  useEffect(() => {
-    if (settings.pageMode !== 'page') return;
-
-    const container = isImmersive ? immersiveContainerRef.current : normalContainerRef.current;
-    if (!container) return;
-
-    const rafId = requestAnimationFrame(() => {
-      container.scrollTop = 0;
-    });
-
-    return () => cancelAnimationFrame(rafId);
-  }, [currentPageKey, settings.pageMode, isImmersive]);
-
+  // ============================== 🖱️ 触控交互 ==============================
   const onTouchStart = (e: React.TouchEvent) => {
     touchStartX.current = e.touches[0].clientX;
     touchStartY.current = e.touches[0].clientY;
@@ -594,7 +555,6 @@ export function TextReader({ content, title, bookId, onClose }: TextReaderProps)
   const onTouchEnd = (e: React.TouchEvent) => {
     const deltaX = touchStartX.current - e.changedTouches[0].clientX;
     const deltaY = touchStartY.current - e.changedTouches[0].clientY;
-
     if (Math.abs(deltaX) > Math.abs(deltaY) && Math.abs(deltaX) > 50) {
       if (deltaX > 0) goToNext();
       else goToPrev();
@@ -603,12 +563,10 @@ export function TextReader({ content, title, bookId, onClose }: TextReaderProps)
 
   const onContentClick = (e: React.MouseEvent) => {
     if (settings.pageMode === 'scroll' && !isImmersive) return;
-
     const activeContainer = isImmersive ? immersiveContainerRef.current : normalContainerRef.current;
     const rect = activeContainer?.getBoundingClientRect();
     if (!rect) return;
     const x = e.clientX - rect.left;
-
     if (x < rect.width * 0.25) goToPrev();
     else if (x > rect.width * 0.75) goToNext();
   };
@@ -617,83 +575,56 @@ export function TextReader({ content, title, bookId, onClose }: TextReaderProps)
     setSettings(prev => ({ ...prev, [key]: value }));
   };
 
-  const renderPageContent = () => {
-    const chapter = chapters[currentChapter];
-    if (!chapter) return null;
+  // ============================== 🖼️ 渲染逻辑 ==============================
+  const renderVirtualScroll = () => {
+    // 预计算所有行高（用于 estimateSize）
+    const itemSizes = useMemo(() => {
+      return Array.from({ length: totalLinesAll }, (_, i) => getItemHeight(i));
+    }, [totalLinesAll, getItemHeight]);
 
-    const startGlobalLine = chapter.startLine + (currentPage * linesPerPage);
-    const endGlobalLine = Math.min(
-      chapter.startLine + ((currentPage + 1) * linesPerPage),
-      chapter.endLine + 1
-    );
-
-    const displayLines = extractLinesFromContent(cleanedContent, startGlobalLine, endGlobalLine);
+    const virtualizer = useVirtualizer({
+      count: totalLinesAll,
+      getScrollElement: () => parentRef.current,
+      estimateSize: (index) => itemSizes[index] ?? 30,
+      overscan: 5,
+    });
 
     return (
-      <div style={{ 
-        fontSize: `${settings.fontSize}px`,
-        fontFamily: settings.fontFamily,
-        lineHeight: settings.lineHeight,
-        letterSpacing: `${settings.letterSpacing}px`,
-        textAlign: settings.textAlign,
-        color: currentTheme.text,
-        textRendering: 'optimizeLegibility',
-        WebkitFontSmoothing: 'antialiased',
-        MozOsxFontSmoothing: 'grayscale',
-      }}>
-        {displayLines.map((line, i) => (
-          <p 
-            key={startGlobalLine + i}
-            style={{ marginBottom: `${settings.paragraphSpacing}em` }}
-            className="break-words"
-          >
-            {line.trim() || '\u00A0'}
-          </p>
-        ))}
-      </div>
-    );
-  };
-
-  const renderScrollContent = () => {
-    return (
-      <div>
-        {chapters.map((chapter, chIndex) => (
-          <div 
-            key={chIndex}
-            ref={el => { chapterRefs.current[chIndex] = el; }}
-            className="mb-8"
-          >
-            <div 
-              className="text-center py-4 mb-4 border-b-2 border-dashed"
-              style={{ 
-                borderColor: `${currentTheme.text}20`,
-                color: currentTheme.text,
-                fontSize: `${settings.fontSize * 1.2}px`,
-                fontWeight: 'bold',
+      <div
+        ref={parentRef}
+        style={{
+          height: '100%',
+          overflowY: 'auto',
+          position: 'relative',
+          contain: 'strict',
+        }}
+      >
+        <div
+          style={{
+            height: `${virtualizer.getTotalSize()}px`,
+            width: '100%',
+            position: 'relative',
+          }}
+        >
+          {virtualizer.getVirtualItems().map((virtualItem) => (
+            <div
+              key={virtualItem.key}
+              data-index={virtualItem.index}
+              ref={(node) => virtualizer.measureElement(node)}
+              style={{
+                position: 'absolute',
+                top: 0,
+                left: 0,
+                width: '100%',
+                height: `${virtualItem.size}px`,
+                transform: `translateY(${virtualItem.start}px)`,
+                boxSizing: 'border-box',
               }}
             >
-              {chapter.title}
+              {renderRow(virtualItem.index)}
             </div>
-            <div style={{ 
-              fontSize: `${settings.fontSize}px`,
-              fontFamily: settings.fontFamily,
-              lineHeight: settings.lineHeight,
-              letterSpacing: `${settings.letterSpacing}px`,
-              textAlign: settings.textAlign,
-              color: currentTheme.text,
-            }}>
-              {chapter.lines.map((line, lineIdx) => (
-                <p 
-                  key={lineIdx}
-                  style={{ marginBottom: `${settings.paragraphSpacing}em` }}
-                  className="break-words"
-                >
-                  {line.trim() || '\u00A0'}
-                </p>
-              ))}
-            </div>
-          </div>
-        ))}
+          ))}
+        </div>
       </div>
     );
   };
@@ -705,14 +636,14 @@ export function TextReader({ content, title, bookId, onClose }: TextReaderProps)
           key={index}
           onClick={() => onSelect(index)}
           className={`w-full text-left px-5 py-3.5 transition-all duration-200 ${
-            currentChapter === index 
-              ? 'bg-primary/20 border-l-4 border-primary' 
+            currentChapter === index
+              ? 'bg-primary/20 border-l-4 border-primary'
               : 'hover:bg-black/5 border-l-4 border-transparent'
           }`}
           style={{ borderBottom: `1px solid ${currentTheme.text}10` }}
         >
-          <p 
-            className={`text-sm ${currentChapter === index ? 'font-semibold' : ''}`} 
+          <p
+            className={`text-sm ${currentChapter === index ? 'font-semibold' : ''}`}
             style={{ color: currentTheme.text }}
           >
             {chapter.title}
@@ -722,96 +653,92 @@ export function TextReader({ content, title, bookId, onClose }: TextReaderProps)
     </div>
   );
 
+  // ============================== 🍃 沉浸模式 ==============================
   if (isImmersive) {
     return (
-      <div 
-        className="fixed inset-0 z-[100] flex flex-col"
-        style={{ backgroundColor: currentTheme.bg }}
-      >
+      <div className="fixed inset-0 z-[100] flex flex-col" style={{ backgroundColor: currentTheme.bg }}>
+        {/* Header & Controls */}
         <div className="absolute bottom-6 left-6 z-10 text-xs opacity-50" style={{ color: currentTheme.text }}>
           {currentTime}
         </div>
-
         <button
           onClick={() => setShowChapters(true)}
-          className="absolute top-4 left-4 z-10 h-9 px-4 rounded-full text-sm font-medium transition-all duration-200 hover:scale-105 flex items-center gap-2"
+          className="absolute top-4 left-4 z-10 h-9 px-4 rounded-full text-sm font-medium transition-all hover:scale-105"
           style={{ backgroundColor: `${currentTheme.text}30`, color: currentTheme.text }}
         >
-          <List className="h-4 w-4" />
-          <span className="max-w-[140px] truncate">{currentChapterData?.title.slice(0, 15) || '无章节'}</span>
+          <span className="max-w-[140px] truncate">{currentChapterData?.title.slice(0, 15)}</span>
         </button>
-
         <div className="absolute top-4 right-4 z-10 flex items-center gap-2">
           <button
             onClick={() => currentChapter > 0 && goToChapter(currentChapter - 1)}
             disabled={currentChapter === 0}
-            className={`w-9 h-9 rounded-full flex items-center justify-center transition-all duration-200 ${
-              currentChapter === 0 ? 'opacity-30 cursor-not-allowed' : 'hover:scale-110'
-            }`}
+            className="w-9 h-9 rounded-full flex items-center justify-center"
             style={{ backgroundColor: `${currentTheme.text}25`, color: currentTheme.text }}
-            title="上一章"
           >
-            <ChevronUp className="h-5 w-5" />
+            <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M12 19V5M5 12l7-7 7 7" />
+            </svg>
           </button>
-
           <button
             onClick={() => currentChapter < chapters.length - 1 && goToChapter(currentChapter + 1)}
             disabled={currentChapter >= chapters.length - 1}
-            className={`w-9 h-9 rounded-full flex items-center justify-center transition-all duration-200 ${
-              currentChapter >= chapters.length - 1 ? 'opacity-30 cursor-not-allowed' : 'hover:scale-110'
-            }`}
+            className="w-9 h-9 rounded-full flex items-center justify-center"
             style={{ backgroundColor: `${currentTheme.text}25`, color: currentTheme.text }}
-            title="下一章"
           >
-            <ChevronDown className="h-5 w-5" />
+            <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M12 5v14M19 12l-7 7-7-7" />
+            </svg>
           </button>
-
           <button
             onClick={toggleImmersive}
-            className="w-9 h-9 rounded-full flex items-center justify-center text-sm font-medium transition-all duration-200 hover:scale-110 ml-1"
+            className="w-9 h-9 rounded-full flex items-center justify-center text-sm font-medium hover:scale-110 ml-1"
             style={{ backgroundColor: `${currentTheme.text}30`, color: currentTheme.text }}
-            title="退出沉浸"
           >
-            <X className="h-4 w-4" />
+            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <line x1="18" y1="6" x2="6" y2="18"></line>
+              <line x1="6" y1="6" x2="18" y2="18"></line>
+            </svg>
           </button>
         </div>
 
-        <div 
+        <div
           ref={immersiveContainerRef}
           className="flex-1 overflow-auto px-6 py-16"
           onTouchStart={onTouchStart}
           onTouchEnd={onTouchEnd}
           onClick={onContentClick}
-          onScroll={handleScroll}
         >
-          <div className="max-w-2xl mx-auto">
-            {settings.pageMode === 'page' ? renderPageContent() : renderScrollContent()}
-          </div>
+          {settings.pageMode === 'page' ? (
+            <div className="max-w-2xl mx-auto">{/* 翻页模式暂未启用虚拟滚动 */}</div>
+          ) : (
+            renderVirtualScroll()
+          )}
         </div>
 
         <div className="absolute bottom-6 left-1/2 -translate-x-1/2 z-10 text-xs opacity-50" style={{ color: currentTheme.text }}>
           {progressPercent}%
         </div>
 
+        {/* Chapters Modal */}
         {showChapters && (
-          <div 
-            className="fixed inset-0 z-[200] flex"
-            onClick={() => setShowChapters(false)}
-          >
+          <div className="fixed inset-0 z-[200] flex" onClick={() => setShowChapters(false)}>
             <div className="absolute inset-0 bg-black/50" />
-            <div 
+            <div
               className="relative w-full max-w-md h-full overflow-y-auto animate-in slide-in-from-left duration-200"
               style={{ backgroundColor: currentTheme.bg }}
               onClick={e => e.stopPropagation()}
             >
               <div className="px-4 py-4 border-b flex items-center justify-between" style={{ borderColor: `${currentTheme.text}15` }}>
                 <h2 style={{ color: currentTheme.text, fontSize: '1.1rem', fontWeight: 600 }}>目录</h2>
-                <button 
+                <button
                   onClick={() => setShowChapters(false)}
                   className="w-8 h-8 rounded-full flex items-center justify-center"
                   style={{ backgroundColor: `${currentTheme.text}15`, color: currentTheme.text }}
                 >
-                  <X className="h-4 w-4" />
+                  <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <line x1="18" y1="6" x2="6" y2="18"></line>
+                    <line x1="6" y1="6" x2="18" y2="18"></line>
+                  </svg>
                 </button>
               </div>
               <ChapterList onSelect={goToChapter} />
@@ -822,56 +749,83 @@ export function TextReader({ content, title, bookId, onClose }: TextReaderProps)
     );
   }
 
+  // ============================== 🖼️ 默认模式 ==============================
   return (
-    <div 
-      className="fixed inset-0 z-50 flex flex-col"
-      style={{ backgroundColor: currentTheme.bg }}
-    >
-      <header 
+    <div className="fixed inset-0 z-50 flex flex-col" style={{ backgroundColor: currentTheme.bg }}>
+      <header
         className={`flex items-center justify-between px-3 py-2 border-b flex-shrink-0 transition-all duration-300 ${
           showHeader ? 'opacity-100' : 'opacity-0 -translate-y-full pointer-events-none'
         }`}
         style={{ borderColor: `${currentTheme.text}12` }}
       >
         <div className="flex items-center gap-2 min-w-0 flex-1">
-          <Button variant="ghost" size="icon" onClick={onClose} className="h-8 w-8 flex-shrink-0">
-            <ChevronLeft className="h-5 w-5" style={{ color: currentTheme.text }} />
-          </Button>
+          <button
+            onClick={onClose}
+            className="h-8 w-8 flex-shrink-0 flex items-center justify-center rounded-full hover:bg-black/5"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M15 18l-6-6 6-6" />
+            </svg>
+          </button>
           <div className="min-w-0 flex-1">
-            <p className="text-sm font-medium truncate" style={{ color: currentTheme.text }}>{title}</p>
+            <p className="text-sm font-medium truncate" style={{ color: currentTheme.text }}>
+              {title}
+            </p>
             <p className="text-xs opacity-50 truncate" style={{ color: currentTheme.text }}>
               {currentChapterData?.title || '无章节'} · {progressPercent}%
             </p>
           </div>
         </div>
-
         <div className="flex items-center gap-0.5 flex-shrink-0">
-          <Button variant="ghost" size="sm" onClick={toggleImmersive} className="h-8 px-2.5 text-xs">
-            <span style={{ color: currentTheme.text }}>沉</span>
-          </Button>
-          <Button variant="ghost" size="icon" onClick={() => setShowChapters(true)} className="h-8 w-8">
-            <List className="h-4 w-4" style={{ color: currentTheme.text }} />
-          </Button>
-          <Button variant="ghost" size="icon" onClick={() => setShowSettings(true)} className="h-8 w-8">
-            <Settings className="h-4 w-4" style={{ color: currentTheme.text }} />
-          </Button>
+          <button
+            onClick={toggleImmersive}
+            className="h-8 px-2.5 text-xs hover:bg-black/5 rounded-md transition-colors"
+            style={{ color: currentTheme.text }}
+          >
+            沉
+          </button>
+          <button
+            onClick={() => setShowChapters(true)}
+            className="h-8 w-8 flex items-center justify-center hover:bg-black/5 rounded-full transition-colors"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <line x1="8" y1="6" x2="21" y2="6"></line>
+              <line x1="8" y1="12" x2="21" y2="12"></line>
+              <line x1="8" y1="18" x2="21" y2="18"></line>
+              <line x1="3" y1="6" x2="3.01" y2="6"></line>
+              <line x1="3" y1="12" x2="3.01" y2="12"></line>
+              <line x1="3" y1="18" x2="3.01" y2="18"></line>
+            </svg>
+          </button>
+          <button
+            onClick={() => setShowSettings(true)}
+            className="h-8 w-8 flex items-center justify-center hover:bg-black/5 rounded-full transition-colors"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <circle cx="12" cy="12" r="3"></circle>
+              <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.5 1.65 1.65 0 0 0 1.5 1 1.65 1.65 0 0 0 1-1.5 1.65 1.65 0 0 0-1.5-1 1.65 1.65 0 0 0-1 1.5 1.65 1.65 0 0 0 1.5 1 1.65 1.65 0 0 0 1-1.5 1.65 1.65 0 0 0-1.5-1z"></path>
+            </svg>
+          </button>
         </div>
       </header>
 
-      <div 
+      <div
         ref={normalContainerRef}
         className="flex-1 overflow-auto relative"
         onTouchStart={onTouchStart}
         onTouchEnd={onTouchEnd}
         onClick={onContentClick}
-        onScroll={handleScroll}
       >
         <div className="max-w-2xl mx-auto px-4 py-4">
-          {settings.pageMode === 'page' ? renderPageContent() : renderScrollContent()}
+          {settings.pageMode === 'page' ? (
+            <div className="max-w-2xl mx-auto">{/* 翻页模式暂未启用虚拟滚动 */}</div>
+          ) : (
+            renderVirtualScroll()
+          )}
         </div>
       </div>
 
-      <footer 
+      <footer
         className={`px-3 py-2 border-t flex-shrink-0 transition-all duration-300 ${
           showHeader ? 'opacity-100' : 'opacity-0 translate-y-full pointer-events-none'
         }`}
@@ -879,157 +833,280 @@ export function TextReader({ content, title, bookId, onClose }: TextReaderProps)
       >
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
-            <Button variant="ghost" size="sm" onClick={() => setIsAutoReading(!isAutoReading)} className="h-8 gap-1.5">
-              {isAutoReading ? <Pause className="h-4 w-4" /> : <Play className="h-4 w-4" />}
-              <span className="text-xs" style={{ color: currentTheme.text }}>{isAutoReading ? '停止' : '自动'}</span>
-            </Button>
+            <button
+              onClick={() => setIsAutoReading(!isAutoReading)}
+              className="h-8 gap-1.5 flex items-center justify-center hover:bg-black/5 rounded-md px-2"
+            >
+              {isAutoReading ? (
+                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <rect x="6" y="4" width="4" height="16"></rect>
+                  <rect x="14" y="4" width="4" height="16"></rect>
+                </svg>
+              ) : (
+                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <polygon points="5 3 19 12 5 21 5 3"></polygon>
+                </svg>
+              )}
+              <span className="text-xs" style={{ color: currentTheme.text }}>
+                {isAutoReading ? '停止' : '自动'}
+              </span>
+            </button>
             <span className="text-xs opacity-50" style={{ color: currentTheme.text }}>
-              {settings.pageMode === 'page' ? `${currentPage + 1} / ${totalPages}页` : `${currentChapter + 1}/${totalChapters}章`}
+              {settings.pageMode === 'page'
+                ? `${Math.floor(lineInChapter / 25) + 1}/${Math.ceil(totalLinesInChapter / 25)}页`
+                : `${currentChapter + 1}/${totalChapters}章`}
             </span>
           </div>
           <div className="flex items-center gap-2">
-            <span className="text-xs opacity-50" style={{ color: currentTheme.text }}>{progressPercent}%</span>
+            <span className="text-xs opacity-50" style={{ color: currentTheme.text }}>
+              {progressPercent}%
+            </span>
           </div>
         </div>
       </footer>
 
+      {/* Settings Panel */}
       {showSettings && (
-        <div 
-          className="fixed inset-0 z-[200] flex justify-end"
-          onClick={() => setShowSettings(false)}
-        >
+        <div className="fixed inset-0 z-[200] flex justify-end" onClick={() => setShowSettings(false)}>
           <div className="absolute inset-0 bg-black/50" />
-          <div 
+          <div
             className="relative w-full max-w-md h-full overflow-y-auto animate-in slide-in-from-right duration-200"
             style={{ backgroundColor: currentTheme.bg }}
             onClick={e => e.stopPropagation()}
           >
             <div className="px-4 py-3 border-b flex items-center justify-between" style={{ borderColor: `${currentTheme.text}12` }}>
               <h2 style={{ color: currentTheme.text, fontWeight: 600 }}>阅读设置</h2>
-              <button 
+              <button
                 onClick={() => setShowSettings(false)}
                 className="w-8 h-8 rounded-full flex items-center justify-center"
                 style={{ backgroundColor: `${currentTheme.text}15`, color: currentTheme.text }}
               >
-                <X className="h-4 w-4" />
+                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <line x1="18" y1="6" x2="6" y2="18"></line>
+                  <line x1="6" y1="6" x2="18" y2="18"></line>
+                </svg>
               </button>
             </div>
-
             <div className="p-4 space-y-5">
               <div className="space-y-2">
                 <div className="flex items-center justify-between">
-                  <span className="text-sm" style={{ color: currentTheme.text }}>字体大小</span>
-                  <span className="text-xs opacity-50" style={{ color: currentTheme.text }}>{settings.fontSize}px</span>
+                  <span className="text-sm" style={{ color: currentTheme.text }}>
+                    字体大小
+                  </span>
+                  <span className="text-xs opacity-50" style={{ color: currentTheme.text }}>
+                    {settings.fontSize}px
+                  </span>
                 </div>
-                <Slider value={[settings.fontSize]} onValueChange={(v) => updateSetting('fontSize', v[0])} min={12} max={32} step={1} />
+                <input
+                  type="range"
+                  min="12"
+                  max="32"
+                  step="1"
+                  value={settings.fontSize}
+                  onChange={e => updateSetting('fontSize', Number(e.target.value))}
+                  className="w-full accent-primary"
+                />
               </div>
-
               <div className="space-y-2">
-                <span className="text-sm" style={{ color: currentTheme.text }}>字体</span>
+                <span className="text-sm" style={{ color: currentTheme.text }}>
+                  字体
+                </span>
                 <div className="grid grid-cols-2 gap-2">
-                  {FONTS.map((f) => (
-                    <Button key={f.name} variant={settings.fontFamily === f.value ? 'default' : 'outline'} size="sm" onClick={() => updateSetting('fontFamily', f.value)} style={{ fontFamily: f.value }} className="text-xs h-9">{f.name}</Button>
+                  {FONTS.map(f => (
+                    <button
+                      key={f.name}
+                      onClick={() => updateSetting('fontFamily', f.value)}
+                      className={`text-xs h-9 rounded-md border transition-colors ${
+                        settings.fontFamily === f.value ? 'border-primary bg-primary/10' : 'border-gray-200 hover:border-gray-300'
+                      }`}
+                      style={{ fontFamily: f.value }}
+                    >
+                      {f.name}
+                    </button>
                   ))}
                 </div>
               </div>
-
               <div className="space-y-2">
-                <span className="text-sm" style={{ color: currentTheme.text }}>背景主题</span>
+                <span className="text-sm" style={{ color: currentTheme.text }}>
+                  背景主题
+                </span>
                 <div className="grid grid-cols-4 gap-2">
                   {THEMES.map((t, i) => (
-                    <button key={i} onClick={() => updateSetting('theme', i)} className={`aspect-square rounded-lg border-2 transition-all ${settings.theme === i ? 'border-primary' : 'border-transparent'}`} style={{ backgroundColor: t.bg }}>
+                    <button
+                      key={i}
+                      onClick={() => updateSetting('theme', i)}
+                      className={`aspect-square rounded-lg border-2 transition-all ${
+                        settings.theme === i ? 'border-primary' : 'border-transparent'
+                      }`}
+                      style={{ backgroundColor: t.bg }}
+                    >
                       <span style={{ color: t.text, fontSize: '10px' }}>{t.name}</span>
                     </button>
                   ))}
                 </div>
               </div>
-
               <div className="space-y-2">
-                <span className="text-sm" style={{ color: currentTheme.text }}>翻页方式</span>
+                <span className="text-sm" style={{ color: currentTheme.text }}>
+                  翻页方式
+                </span>
                 <div className="flex gap-2">
-                  {PAGE_MODES.map((m) => (
-                    <Button key={m.value} variant={settings.pageMode === m.value ? 'default' : 'outline'} className="flex-1 gap-2 h-9" onClick={() => updateSetting('pageMode', m.value as 'scroll' | 'page')}>
-                      <m.icon className="h-4 w-4" />{m.name}
-                    </Button>
+                  {PAGE_MODES.map(m => (
+                    <button
+                      key={m.value}
+                      onClick={() => updateSetting('pageMode', m.value as 'scroll' | 'page')}
+                      className={`flex-1 gap-2 h-9 rounded-md border transition-colors ${
+                        settings.pageMode === m.value
+                          ? 'border-primary bg-primary/10'
+                          : 'border-gray-200 hover:border-gray-300'
+                      }`}
+                    >
+                      {m.name}
+                    </button>
                   ))}
                 </div>
               </div>
-
               <div className="space-y-2">
-                <span className="text-sm" style={{ color: currentTheme.text }}>文字对齐</span>
+                <span className="text-sm" style={{ color: currentTheme.text }}>
+                  文字对齐
+                </span>
                 <div className="flex gap-2">
-                  {TEXT_ALIGNS.map((a) => (
-                    <Button key={a.value} variant={settings.textAlign === a.value ? 'default' : 'outline'} className="flex-1 gap-2 h-9" onClick={() => updateSetting('textAlign', a.value as 'left' | 'center' | 'justify')}>
-                      <a.icon className="h-4 w-4" />{a.name}
-                    </Button>
+                  {TEXT_ALIGNS.map(a => (
+                    <button
+                      key={a.value}
+                      onClick={() => updateSetting('textAlign', a.value as 'left' | 'center' | 'justify')}
+                      className={`flex-1 gap-2 h-9 rounded-md border transition-colors ${
+                        settings.textAlign === a.value
+                          ? 'border-primary bg-primary/10'
+                          : 'border-gray-200 hover:border-gray-300'
+                      }`}
+                    >
+                      {a.name}
+                    </button>
                   ))}
                 </div>
               </div>
-
               <div className="space-y-2">
                 <div className="flex items-center justify-between">
-                  <span className="text-sm" style={{ color: currentTheme.text }}>行间距</span>
-                  <span className="text-xs opacity-50" style={{ color: currentTheme.text }}>{settings.lineHeight.toFixed(1)}</span>
+                  <span className="text-sm" style={{ color: currentTheme.text }}>
+                    行间距
+                  </span>
+                  <span className="text-xs opacity-50" style={{ color: currentTheme.text }}>
+                    {settings.lineHeight.toFixed(1)}
+                  </span>
                 </div>
-                <Slider value={[settings.lineHeight]} onValueChange={(v) => updateSetting('lineHeight', v[0])} min={1.2} max={2.5} step={0.1} />
+                <input
+                  type="range"
+                  min="1.2"
+                  max="2.5"
+                  step="0.1"
+                  value={settings.lineHeight}
+                  onChange={e => updateSetting('lineHeight', Number(e.target.value))}
+                  className="w-full accent-primary"
+                />
               </div>
-
               <div className="space-y-2">
                 <div className="flex items-center justify-between">
-                  <span className="text-sm" style={{ color: currentTheme.text }}>字间距</span>
-                  <span className="text-xs opacity-50" style={{ color: currentTheme.text }}>{settings.letterSpacing.toFixed(1)}px</span>
+                  <span className="text-sm" style={{ color: currentTheme.text }}>
+                    字间距
+                  </span>
+                  <span className="text-xs opacity-50" style={{ color: currentTheme.text }}>
+                    {settings.letterSpacing.toFixed(1)}px
+                  </span>
                 </div>
-                <Slider value={[settings.letterSpacing]} onValueChange={(v) => updateSetting('letterSpacing', v[0])} min={0} max={3} step={0.1} />
+                <input
+                  type="range"
+                  min="0"
+                  max="3"
+                  step="0.1"
+                  value={settings.letterSpacing}
+                  onChange={e => updateSetting('letterSpacing', Number(e.target.value))}
+                  className="w-full accent-primary"
+                />
               </div>
-
               <div className="space-y-2">
                 <div className="flex items-center justify-between">
-                  <span className="text-sm" style={{ color: currentTheme.text }}>段间距</span>
-                  <span className="text-xs opacity-50" style={{ color: currentTheme.text }}>{settings.paragraphSpacing.toFixed(1)}em</span>
+                  <span className="text-sm" style={{ color: currentTheme.text }}>
+                    段间距
+                  </span>
+                  <span className="text-xs opacity-50" style={{ color: currentTheme.text }}>
+                    {settings.paragraphSpacing.toFixed(1)}em
+                  </span>
                 </div>
-                <Slider value={[settings.paragraphSpacing]} onValueChange={(v) => updateSetting('paragraphSpacing', v[0])} min={0} max={2} step={0.1} />
+                <input
+                  type="range"
+                  min="0"
+                  max="2"
+                  step="0.1"
+                  value={settings.paragraphSpacing}
+                  onChange={e => updateSetting('paragraphSpacing', Number(e.target.value))}
+                  className="w-full accent-primary"
+                />
               </div>
-
               <div className="flex items-center justify-between py-2">
                 <div className="flex items-center gap-2">
-                  <Monitor className="h-4 w-4 opacity-60" style={{ color: currentTheme.text }} />
-                  <span className="text-sm" style={{ color: currentTheme.text }}>自动隐藏顶栏</span>
+                  <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="opacity-60">
+                    <circle cx="12" cy="12" r="3"></circle>
+                    <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.5 1.65 1.65 0 0 0 1.5 1 1.65 1.65 0 0 0 1-1.5 1.65 1.65 0 0 0-1.5-1 1.65 1.65 0 0 0-1 1.5 1.65 1.65 0 0 0 1.5 1 1.65 1.65 0 0 0 1-1.5 1.65 1.65 0 0 0-1.5-1z"></path>
+                  </svg>
+                  <span className="text-sm" style={{ color: currentTheme.text }}>
+                    自动隐藏顶栏
+                  </span>
                 </div>
-                <Switch checked={settings.autoHideHeader} onCheckedChange={(v) => updateSetting('autoHideHeader', v)} />
+                <input
+                  type="checkbox"
+                  checked={settings.autoHideHeader}
+                  onChange={e => updateSetting('autoHideHeader', e.target.checked)}
+                  className="accent-primary"
+                />
               </div>
-
               <div className="space-y-2">
                 <div className="flex items-center gap-2">
-                  <Clock className="h-4 w-4 opacity-60" style={{ color: currentTheme.text }} />
-                  <span className="text-sm" style={{ color: currentTheme.text }}>自动阅读速度</span>
+                  <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="opacity-60">
+                    <circle cx="12" cy="12" r="10"></circle>
+                    <polyline points="12 6 12 12 16 14"></polyline>
+                  </svg>
+                  <span className="text-sm" style={{ color: currentTheme.text }}>
+                    自动阅读速度
+                  </span>
                 </div>
-                <Slider value={[autoReadSpeed]} onValueChange={(v) => setAutoReadSpeed(v[0])} min={50} max={500} step={10} inverted />
-                <p className="text-xs opacity-50" style={{ color: currentTheme.text }}>数值越小速度越快</p>
+                <input
+                  type="range"
+                  min="50"
+                  max="500"
+                  step="10"
+                  value={autoReadSpeed}
+                  onChange={e => setAutoReadSpeed(Number(e.target.value))}
+                  className="w-full accent-primary"
+                />
+                <p className="text-xs opacity-50" style={{ color: currentTheme.text }}>
+                  数值越小速度越快
+                </p>
               </div>
             </div>
           </div>
         </div>
       )}
 
+      {/* Chapters Panel */}
       {showChapters && (
-        <div 
-          className="fixed inset-0 z-[200] flex"
-          onClick={() => setShowChapters(false)}
-        >
+        <div className="fixed inset-0 z-[200] flex" onClick={() => setShowChapters(false)}>
           <div className="absolute inset-0 bg-black/50" />
-          <div 
+          <div
             className="relative w-full max-w-md h-full overflow-y-auto animate-in slide-in-from-left duration-200"
             style={{ backgroundColor: currentTheme.bg }}
             onClick={e => e.stopPropagation()}
           >
             <div className="px-4 py-3 border-b flex items-center justify-between" style={{ borderColor: `${currentTheme.text}12` }}>
               <h2 style={{ color: currentTheme.text, fontWeight: 600 }}>目录</h2>
-              <button 
+              <button
                 onClick={() => setShowChapters(false)}
                 className="w-8 h-8 rounded-full flex items-center justify-center"
                 style={{ backgroundColor: `${currentTheme.text}15`, color: currentTheme.text }}
               >
-                <X className="h-4 w-4" />
+                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <line x1="18" y1="6" x2="6" y2="18"></line>
+                  <line x1="6" y1="6" x2="18" y2="18"></line>
+                </svg>
               </button>
             </div>
             <ChapterList onSelect={goToChapter} />

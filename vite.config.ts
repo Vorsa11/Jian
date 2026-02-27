@@ -48,7 +48,11 @@ export default defineConfig({
   build: {
     outDir: 'docs',
     rollupOptions: {
-      input: path.resolve(__dirname, 'index.html') // 👈 使用 path.resolve
+      input: path.resolve(__dirname, 'index.html')
     }
+  },
+  // 👇 新增：防止 Vite 误扫描未使用的依赖
+  optimizeDeps: {
+    exclude: ['react-window', 'react-virtualized-auto-sizer'],
   },
 });
