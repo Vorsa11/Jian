@@ -14,7 +14,6 @@ import {
   Maximize2,
   Minimize2,
   LayoutGrid,
-  ScrollText,
   ArrowLeft,
   MoreVertical,
   Highlighter,
@@ -23,10 +22,9 @@ import {
   PanelLeft,
   PanelRight,
   Check,
-  ScanLine,
-  GripHorizontal,
-  Type,
+  BookOpen,
   StickyNote,
+  Type,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
@@ -34,11 +32,9 @@ import { Textarea } from '@/components/ui/textarea';
 import { Checkbox } from '@/components/ui/checkbox';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from '@/components/ui/sheet';
-import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { cn } from '@/lib/utils';
 import { toast } from 'sonner';
 
-// 修复 Worker 配置（去除空格）
 pdfjs.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${pdfjs.version}/build/pdf.worker.min.mjs`;
 
 interface PDFAnnotation {
@@ -83,64 +79,6 @@ const formatDate = (dateString: string) => {
   });
 };
 
-// 快捷批注按钮组件
-const FloatingActionButton = ({
-  isOpen,
-  onToggle,
-  onHighlight,
-  onNote,
-  activeTool,
-  isMobile
-}: {
-  isOpen: boolean;
-  onToggle: () => void;
-  onHighlight: () => void;
-  onNote: () => void;
-  activeTool: 'select' | 'note' | 'highlight';
-  isMobile: boolean;
-}) => {
-  if (!isMobile) return null;
-  
-  return (
-    <div className="fixed bottom-24 right-4 z-50 flex flex-col items-end gap-3 pointer-events-none">
-      <div 
-        className={cn(
-          "flex flex-col gap-3 transition-all duration-300 pointer-events-auto",
-          isOpen ? "opacity-100 translate-y-0" : "opacity-0 translate-y-4 pointer-events-none"
-        )}
-      >
-        <Button
-          variant={activeTool === 'highlight' ? 'default' : 'secondary'}
-          size="lg"
-          className="rounded-full shadow-xl h-14 w-14 border-2 border-background transition-transform hover:scale-110"
-          onClick={onHighlight}
-        >
-          <Highlighter className="h-6 w-6" />
-        </Button>
-        <Button
-          variant={activeTool === 'note' ? 'default' : 'secondary'}
-          size="lg"
-          className="rounded-full shadow-xl h-14 w-14 border-2 border-background transition-transform hover:scale-110"
-          onClick={onNote}
-        >
-          <StickyNote className="h-6 w-6" />
-        </Button>
-      </div>
-      <Button
-        variant="default"
-        size="lg"
-        className={cn(
-          "rounded-full shadow-2xl h-16 w-16 border-4 border-background transition-all duration-300 pointer-events-auto",
-          isOpen && "rotate-45 bg-destructive hover:bg-destructive"
-        )}
-        onClick={onToggle}
-      >
-        <Plus className="h-8 w-8" />
-      </Button>
-    </div>
-  );
-};
-
 export function PDFViewer({
   fileUrl,
   book,
@@ -153,14 +91,14 @@ export function PDFViewer({
 }: PDFViewerProps) {
   const [numPages, setNumPages] = useState(0);
   const [pageNumber, setPageNumber] = useState(1);
-  const [scale, setScale] = useState(1.2);
+  const [scale, setScale] = useState(1.0);
   const [rotation, setRotation] = useState(0);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [isDownloadDialogOpen, setIsDownloadDialogOpen] = useState(false);
   const [includeAnnotations, setIncludeAnnotations] = useState(true);
   const [viewMode, setViewMode] = useState<'single' | 'scroll' | 'thumbnails'>('single');
-  const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
   const [sidebarTab, setSidebarTab] = useState<'thumbnails' | 'annotations'>('thumbnails');
   
   const [activeTool, setActiveTool] = useState<'select' | 'note' | 'highlight'>('select');
@@ -180,24 +118,31 @@ export function PDFViewer({
   } | null>(null);
   
   const [isMobile, setIsMobile] = useState(false);
-  const [showToolbar, setShowToolbar] = useState(true);
   const [showFloatingTools, setShowFloatingTools] = useState(false);
-  const [fabOpen, setFabOpen] = useState(false);
-  const [immersiveMode, setImmersiveMode] = useState(false);
-  const toolbarTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [showGestureHint, setShowGestureHint] = useState(true);
+  const [isPinching, setIsPinching] = useState(false);
   
   const containerRef = useRef<HTMLDivElement>(null);
   const pageRef = useRef<HTMLDivElement>(null);
-  const touchStart = useRef<{ x: number; y: number } | null>(null);
-  const lastTap = useRef<number>(0);
+  const touchStart = useRef<{ x: number; y: number; time: number } | null>(null);
+  const touchStartDist = useRef<number>(0);
+  const lastPinchDistance = useRef<number>(0);
+  const lastTap = useRef<{ time: number; x: number; y: number } | null>(null);
 
+  // 检测移动端并设置合适的初始状态
   useEffect(() => {
     const checkMobile = () => {
       const mobile = window.innerWidth < 768;
       setIsMobile(mobile);
       if (mobile) {
         setSidebarOpen(false);
-        setScale(0.8);
+        setScale(0.85); // 移动端默认更适合的缩放
+        // 检查是否是首次使用
+        const hasSeenHint = localStorage.getItem('pdf-gesture-hint-seen');
+        if (hasSeenHint) setShowGestureHint(false);
+      } else {
+        setScale(1.2);
+        setSidebarOpen(true);
       }
     };
     checkMobile();
@@ -209,37 +154,16 @@ export function PDFViewer({
     return () => window.removeEventListener('resize', checkMobile);
   }, [book.id]);
 
+  // 手势提示自动隐藏
   useEffect(() => {
-    const handleFullscreenChange = () => {
-      const isFs = !!document.fullscreenElement;
-      setIsFullscreen(isFs);
-      if (isFs) {
-        setImmersiveMode(true);
-        resetToolbarTimer();
-      } else {
-        setImmersiveMode(false);
-        setShowToolbar(true);
-      }
-    };
-    document.addEventListener('fullscreenchange', handleFullscreenChange);
-    return () => document.removeEventListener('fullscreenchange', handleFullscreenChange);
-  }, []);
-
-  // 沉浸模式自动隐藏工具栏
-  const resetToolbarTimer = useCallback(() => {
-    if (!immersiveMode && !isFullscreen && !isMobile) return;
-    
-    setShowToolbar(true);
-    if (toolbarTimeout.current) clearTimeout(toolbarTimeout.current);
-    
-    // 沉浸模式下更快隐藏工具栏
-    const delay = immersiveMode ? 2000 : 4000;
-    toolbarTimeout.current = setTimeout(() => {
-      if (!fabOpen && !selectedAnnotation && !pendingNote) {
-        setShowToolbar(false);
-      }
-    }, delay);
-  }, [immersiveMode, isFullscreen, isMobile, fabOpen, selectedAnnotation, pendingNote]);
+    if (showGestureHint && isMobile) {
+      const timer = setTimeout(() => {
+        setShowGestureHint(false);
+        localStorage.setItem('pdf-gesture-hint-seen', 'true');
+      }, 5000);
+      return () => clearTimeout(timer);
+    }
+  }, [showGestureHint, isMobile]);
 
   const onDocumentLoadSuccess = useCallback(({ numPages }: { numPages: number }) => {
     setNumPages(numPages);
@@ -263,47 +187,42 @@ export function PDFViewer({
     localStorage.setItem(`pdf-progress-${book.id}`, String(target));
     setSelection(null);
     window.getSelection()?.removeAllRanges();
-    // 移动端翻页后短暂显示工具栏
-    if (isMobile || immersiveMode) {
-      resetToolbarTimer();
-    }
-  }, [numPages, book.id, isMobile, immersiveMode, resetToolbarTimer]);
+  }, [numPages, book.id]);
 
   const goToPrev = () => goToPage(pageNumber - 1);
   const goToNext = () => goToPage(pageNumber + 1);
 
   const handleZoom = useCallback((delta: number) => {
-    setScale(s => Math.max(0.5, Math.min(3, s + delta)));
+    setScale(s => {
+      const newScale = Math.max(0.5, Math.min(3, s + delta));
+      return Math.round(newScale * 10) / 10; // 防止浮点误差
+    });
   }, []);
 
   const fitToWidth = useCallback(() => {
-    const containerWidth = containerRef.current?.clientWidth || 800;
-    const sidebarWidth = sidebarOpen && !isMobile ? 240 : 0;
-    const availableWidth = containerWidth - sidebarWidth - 48;
-    setScale(Math.min(availableWidth / 612, 2));
+    if (isMobile) {
+      setScale(0.85);
+    } else {
+      const containerWidth = containerRef.current?.clientWidth || 800;
+      const sidebarWidth = sidebarOpen ? 240 : 0;
+      const availableWidth = containerWidth - sidebarWidth - 48;
+      setScale(Math.min(availableWidth / 612, 2));
+    }
   }, [sidebarOpen, isMobile]);
 
   const toggleFullscreen = useCallback(async () => {
     try {
       if (!document.fullscreenElement) {
         await containerRef.current?.requestFullscreen();
+        setIsFullscreen(true);
       } else {
         await document.exitFullscreen();
+        setIsFullscreen(false);
       }
     } catch {
       toast.error('无法切换全屏模式');
     }
   }, []);
-
-  const toggleImmersive = useCallback(() => {
-    setImmersiveMode(prev => !prev);
-    if (!immersiveMode) {
-      resetToolbarTimer();
-      toast.success('已进入沉浸模式，点击任意处显示工具栏');
-    } else {
-      setShowToolbar(true);
-    }
-  }, [immersiveMode, resetToolbarTimer]);
 
   const handleTextSelection = useCallback(() => {
     if (activeTool !== 'highlight' && activeTool !== 'select') return;
@@ -316,7 +235,7 @@ export function PDFViewer({
     }
     
     const text = sel.toString().trim();
-    if (!text) return;
+    if (!text || text.length < 2) return; // 防止误触选中的单个字符
     
     const range = sel.getRangeAt(0);
     const rects = Array.from(range.getClientRects()).map(rect => ({
@@ -336,11 +255,9 @@ export function PDFViewer({
         rects,
         page: pageNum,
       });
-      // 自动显示浮动工具栏，如果是选择模式则提供快速高亮选项
       setShowFloatingTools(true);
-      resetToolbarTimer();
     }
-  }, [activeTool, pageNumber, resetToolbarTimer]);
+  }, [activeTool, pageNumber]);
 
   const addHighlight = useCallback((content: string = '') => {
     if (!selection) return;
@@ -383,7 +300,6 @@ export function PDFViewer({
     const y = (e.clientY - rect.top) / rect.height;
     
     setPendingNote({ x, y, page: pageNum });
-    setFabOpen(false);
   }, [activeTool]);
 
   const confirmAddNote = useCallback((content: string) => {
@@ -411,27 +327,91 @@ export function PDFViewer({
     toast.success('批注已删除');
   }, [onDeleteAnnotation]);
 
-  // 快速笔记（不选位置，自动放在当前页中央）
-  const quickAddNote = useCallback(() => {
-    setActiveTool('note');
-    setPendingNote({
-      x: 0.5,
-      y: 0.3,
-      page: pageNumber
-    });
-    setFabOpen(false);
-  }, [pageNumber]);
-
-  // 快速高亮（如果已有选中文本则直接高亮，否则进入高亮模式）
-  const quickHighlight = useCallback(() => {
-    if (selection && selection.text) {
-      addHighlight();
-    } else {
-      setActiveTool(activeTool === 'highlight' ? 'select' : 'highlight');
-      toast.info(activeTool === 'highlight' ? '已退出高亮模式' : '请选中文本进行高亮');
+  // 优化的触摸手势处理
+  const onTouchStart = (e: React.TouchEvent) => {
+    if (e.touches.length === 2) {
+      // 双指缩放开始
+      setIsPinching(true);
+      const dist = Math.hypot(
+        e.touches[0].pageX - e.touches[1].pageX,
+        e.touches[0].pageY - e.touches[1].pageY
+      );
+      touchStartDist.current = dist;
+      lastPinchDistance.current = dist;
+    } else if (e.touches.length === 1) {
+      // 单指触摸
+      touchStart.current = { 
+        x: e.touches[0].clientX, 
+        y: e.touches[0].clientY,
+        time: Date.now()
+      };
     }
-    setFabOpen(false);
-  }, [activeTool, selection, addHighlight]);
+  };
+
+  const onTouchMove = (e: React.TouchEvent) => {
+    if (e.touches.length === 2 && isPinching) {
+      e.preventDefault(); // 防止页面滚动
+      const dist = Math.hypot(
+        e.touches[0].pageX - e.touches[1].pageX,
+        e.touches[0].pageY - e.touches[1].pageY
+      );
+      
+      // 缩放灵敏度调整，每 50px 变化 0.1
+      const delta = (dist - lastPinchDistance.current) / 50 * 0.1;
+      if (Math.abs(delta) > 0.05) {
+        setScale(s => Math.max(0.5, Math.min(3, s + delta)));
+        lastPinchDistance.current = dist;
+      }
+    }
+  };
+
+  const onTouchEnd = (e: React.TouchEvent) => {
+    // 处理双指结束
+    if (e.touches.length === 0 && isPinching) {
+      setIsPinching(false);
+      return;
+    }
+    
+    if (!touchStart.current || isPinching || viewMode !== 'single') {
+      touchStart.current = null;
+      return;
+    }
+    
+    const touch = e.changedTouches[0];
+    const dx = touchStart.current.x - touch.clientX;
+    const dy = touchStart.current.y - touch.clientY;
+    const dt = Date.now() - touchStart.current.time;
+    
+    // 双击检测（300ms 内，位移小于 10px）
+    const now = Date.now();
+    if (lastTap.current && 
+        now - lastTap.current.time < 300 && 
+        Math.abs(touch.clientX - lastTap.current.x) < 10 &&
+        Math.abs(touch.clientY - lastTap.current.y) < 10) {
+      // 双击缩放
+      if (scale > 1.2) {
+        setScale(0.85);
+        toast.success('恢复默认大小');
+      } else {
+        setScale(Math.min(2.0, scale + 0.5));
+        toast.success('放大');
+      }
+      lastTap.current = null;
+      touchStart.current = null;
+      return;
+    }
+    
+    lastTap.current = { time: now, x: touch.clientX, y: touch.clientY };
+    
+    // 滑动翻页判定（快速滑动或长距离滑动）
+    if (Math.abs(dx) > Math.abs(dy) && Math.abs(dx) > 50 && dt < 300) {
+      e.preventDefault();
+      if (dx > 0) goToNext();
+      else goToPrev();
+    }
+    
+    touchStart.current = null;
+  };
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -472,16 +452,8 @@ export function PDFViewer({
             setActiveTool(activeTool === 'note' ? 'select' : 'note');
           }
           break;
-        case 'i':
-          if (!e.ctrlKey && !e.metaKey) {
-            e.preventDefault();
-            toggleImmersive();
-          }
-          break;
         case 'Escape':
-          if (fabOpen) {
-            setFabOpen(false);
-          } else if (selection) {
+          if (selection) {
             setSelection(null);
             window.getSelection()?.removeAllRanges();
           } else if (selectedAnnotation) {
@@ -490,9 +462,6 @@ export function PDFViewer({
             setPendingNote(null);
           } else if (activeTool !== 'select') {
             setActiveTool('select');
-          } else if (immersiveMode) {
-            setImmersiveMode(false);
-            setShowToolbar(true);
           } else if (onClose) {
             onClose();
           }
@@ -502,40 +471,7 @@ export function PDFViewer({
     
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [goToNext, goToPrev, goToPage, numPages, selectedAnnotation, pendingNote, activeTool, onClose, selection, immersiveMode, fabOpen, toggleImmersive]);
-
-  const onTouchStart = (e: React.TouchEvent) => {
-    touchStart.current = { x: e.touches[0].clientX, y: e.touches[0].clientY };
-    resetToolbarTimer();
-    
-    const now = Date.now();
-    if (now - lastTap.current < 300) {
-      // 双击缩放
-      setScale(s => s > 1.2 ? 1.0 : Math.min(2.0, s + 0.4));
-    }
-    lastTap.current = now;
-  };
-
-  const onTouchEnd = (e: React.TouchEvent) => {
-    if (!touchStart.current || viewMode !== 'single') return;
-    
-    const dx = touchStart.current.x - e.changedTouches[0].clientX;
-    const dy = touchStart.current.y - e.changedTouches[0].clientY;
-    
-    // 水平滑动翻页
-    if (Math.abs(dx) > Math.abs(dy) && Math.abs(dx) > 50) {
-      if (dx > 0) goToNext();
-      else goToPrev();
-    }
-    
-    touchStart.current = null;
-  };
-
-  const onMouseMove = useCallback(() => {
-    if (immersiveMode || isFullscreen) {
-      resetToolbarTimer();
-    }
-  }, [immersiveMode, isFullscreen, resetToolbarTimer]);
+  }, [goToNext, goToPrev, goToPage, numPages, selectedAnnotation, pendingNote, activeTool, onClose, selection]);
 
   const currentAnnotations = useMemo(() => 
     annotations.filter(a => a.page === pageNumber),
@@ -569,25 +505,25 @@ export function PDFViewer({
   if (viewMode === 'thumbnails') {
     return (
       <div className="flex flex-col h-full bg-background">
-        <div className="flex items-center justify-between p-3 border-b bg-muted/50 sticky top-0 z-20">
+        <div className="flex items-center justify-between p-3 border-b bg-background/80 backdrop-blur-md sticky top-0 z-20">
           <div className="flex items-center gap-2">
             {onClose && (
-              <Button variant="ghost" size="icon" onClick={onClose}>
+              <Button variant="ghost" size="icon" className="h-9 w-9" onClick={onClose}>
                 <ArrowLeft className="h-5 w-5" />
               </Button>
             )}
-            <Button variant="outline" size="sm" onClick={() => setViewMode('single')}>
-              <ScrollText className="h-4 w-4 mr-2" />
-              阅读模式
+            <Button variant="outline" size="sm" onClick={() => setViewMode('single')} className="h-9">
+              <BookOpen className="h-4 w-4 mr-2" />
+              阅读
             </Button>
           </div>
-          <span className="font-medium text-sm truncate max-w-[200px]">{book.title}</span>
-          <span className="text-xs text-muted-foreground">{numPages} 页</span>
+          <span className="font-medium text-sm truncate max-w-[150px]">{book.title}</span>
+          <span className="text-xs text-muted-foreground px-2">{numPages} 页</span>
         </div>
-        <ScrollArea className="flex-1">
-          <div className="p-4">
+        <ScrollArea className="flex-1 bg-muted/20">
+          <div className="p-4 pb-24">
             <Document file={fileUrl} onLoadSuccess={onDocumentLoadSuccess} onLoadError={onDocumentLoadError}>
-              <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-4">
+              <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3">
                 {Array.from({ length: numPages }, (_, i) => i + 1).map(page => (
                   <button
                     key={page}
@@ -595,12 +531,15 @@ export function PDFViewer({
                       setPageNumber(page);
                       setViewMode('single');
                     }}
-                    className="relative aspect-[3/4] rounded-lg overflow-hidden hover:ring-2 hover:ring-primary transition-all"
+                    className="relative aspect-[3/4] rounded-lg overflow-hidden bg-white shadow-sm hover:shadow-md hover:ring-2 hover:ring-primary transition-all active:scale-95"
                   >
-                    <Page pageNumber={page} scale={0.2} renderTextLayer={false} renderAnnotationLayer={false} />
-                    <div className="absolute bottom-0 inset-x-0 bg-black/60 text-white text-[10px] py-1 text-center">
-                      {page}
+                    <Page pageNumber={page} scale={0.15} renderTextLayer={false} renderAnnotationLayer={false} />
+                    <div className="absolute inset-0 bg-gradient-to-t from-black/60 via-transparent to-transparent opacity-0 hover:opacity-100 transition-opacity flex items-end justify-center pb-2">
+                      <span className="text-white text-xs font-medium">{page}</span>
                     </div>
+                    {pageNumber === page && (
+                      <div className="absolute inset-0 ring-2 ring-primary ring-inset" />
+                    )}
                   </button>
                 ))}
               </div>
@@ -615,41 +554,13 @@ export function PDFViewer({
     <div 
       ref={containerRef}
       className={cn(
-        "flex h-full bg-background overflow-hidden relative select-none",
-        isFullscreen && "fixed inset-0 z-50 bg-black",
-        immersiveMode && !isFullscreen && "fixed inset-0 z-40"
+        "flex h-full bg-background overflow-hidden relative",
+        isFullscreen && "fixed inset-0 z-50 bg-black"
       )}
-      onMouseMove={onMouseMove}
-      onClick={resetToolbarTimer}
     >
-      {/* 沉浸模式指示器 */}
-      {immersiveMode && (
-        <div className="absolute top-2 right-2 z-50 opacity-0 hover:opacity-100 transition-opacity">
-          <Button variant="secondary" size="sm" className="bg-black/50 text-white border-0" onClick={toggleImmersive}>
-            <Minimize2 className="h-4 w-4 mr-2" />
-            退出沉浸
-          </Button>
-        </div>
-      )}
-
-      {/* 全屏退出按钮 */}
-      {isFullscreen && (
-        <Button
-          variant="secondary"
-          size="sm"
-          className="absolute top-4 right-4 z-50 shadow-lg opacity-0 hover:opacity-100 transition-opacity bg-black/50 text-white border-0"
-          onClick={toggleFullscreen}
-        >
-          <Minimize2 className="h-4 w-4 mr-2" />
-          退出全屏
-        </Button>
-      )}
-
+      {/* 桌面端侧边栏 */}
       {!isMobile && sidebarOpen && (
-        <div className={cn(
-          "w-60 border-r bg-muted/30 flex flex-col transition-all duration-300",
-          (immersiveMode || isFullscreen) && !showToolbar && "-ml-60"
-        )}>
+        <div className="w-60 border-r bg-muted/30 flex flex-col shrink-0">
           <div className="flex items-center justify-between p-3 border-b">
             <span className="font-semibold text-sm truncate pr-2">{book.title}</span>
             <Button variant="ghost" size="icon" className="h-8 w-8 shrink-0" onClick={() => setSidebarOpen(false)}>
@@ -734,201 +645,142 @@ export function PDFViewer({
         </div>
       )}
 
-      <div className="flex-1 flex flex-col relative">
-        {/* 顶部工具栏 */}
+      <div className="flex-1 flex flex-col relative min-w-0">
+        {/* 顶部导航栏 - 桌面端始终显示，移动端紧凑显示 */}
         <div className={cn(
-          "absolute top-4 left-1/2 -translate-x-1/2 z-40 transition-all duration-500",
-          !showToolbar && (isMobile || immersiveMode || isFullscreen) && "-translate-y-24 opacity-0 pointer-events-none"
+          "absolute top-0 left-0 right-0 z-40 bg-background/80 backdrop-blur-md border-b transition-transform duration-300",
+          isMobile ? "h-12" : "h-14",
+          isFullscreen && "-translate-y-full"
         )}>
-          <div className="flex items-center gap-1 bg-background/95 backdrop-blur-md border rounded-full shadow-2xl px-2 py-1.5">
-            {onClose && (
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <Button variant="ghost" size="icon" className="h-8 w-8 rounded-full" onClick={onClose}>
-                    <ArrowLeft className="h-4 w-4" />
-                  </Button>
-                </TooltipTrigger>
-                <TooltipContent>退出</TooltipContent>
-              </Tooltip>
-            )}
-            
-            {!sidebarOpen && !isMobile && (
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <Button variant="ghost" size="icon" className="h-8 w-8 rounded-full" onClick={() => setSidebarOpen(true)}>
-                    <PanelRight className="h-4 w-4" />
-                  </Button>
-                </TooltipTrigger>
-                <TooltipContent>侧边栏</TooltipContent>
-              </Tooltip>
-            )}
-
-            <div className="w-px h-4 bg-border mx-1" />
-
-            <Button variant="ghost" size="icon" className="h-8 w-8 rounded-full" onClick={goToPrev} disabled={pageNumber <= 1}>
-              <ChevronLeft className="h-4 w-4" />
-            </Button>
-
-            <div className="flex items-center px-2 min-w-[80px] justify-center">
-              <span className="text-sm font-mono">{pageNumber} / {numPages}</span>
+          <div className="flex items-center justify-between h-full px-3">
+            <div className="flex items-center gap-1">
+              {onClose && (
+                <Button variant="ghost" size="icon" className="h-8 w-8" onClick={onClose}>
+                  <ArrowLeft className="h-4 w-4" />
+                </Button>
+              )}
+              {!isMobile && !sidebarOpen && (
+                <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => setSidebarOpen(true)}>
+                  <PanelRight className="h-4 w-4" />
+                </Button>
+              )}
+              {isMobile && (
+                <Button variant="ghost" size="sm" className="h-8 px-2 text-xs" onClick={() => setViewMode('thumbnails')}>
+                  <LayoutGrid className="h-4 w-4 mr-1" />
+                  目录
+                </Button>
+              )}
             </div>
 
-            <Button variant="ghost" size="icon" className="h-8 w-8 rounded-full" onClick={goToNext} disabled={pageNumber >= numPages}>
-              <ChevronRight className="h-4 w-4" />
-            </Button>
+            <div className="flex items-center gap-2">
+              <span className="text-xs font-medium text-muted-foreground">
+                {pageNumber} <span className="text-muted-foreground/50">/</span> {numPages}
+              </span>
+            </div>
 
-            <div className="w-px h-4 bg-border mx-1" />
-
-            <Button variant="ghost" size="icon" className="h-8 w-8 rounded-full" onClick={() => handleZoom(-0.2)}>
-              <ZoomOut className="h-4 w-4" />
-            </Button>
-
-            <span className="text-xs w-10 text-center font-mono">{Math.round(scale * 100)}%</span>
-
-            <Button variant="ghost" size="icon" className="h-8 w-8 rounded-full" onClick={() => handleZoom(0.2)}>
-              <ZoomIn className="h-4 w-4" />
-            </Button>
-
-            <div className="w-px h-4 bg-border mx-1 hidden sm:block" />
-
-            <Button 
-              variant={activeTool === 'highlight' ? 'default' : 'ghost'} 
-              size="icon" 
-              className="h-8 w-8 rounded-full hidden sm:flex"
-              onClick={() => setActiveTool(activeTool === 'highlight' ? 'select' : 'highlight')}
-            >
-              <Highlighter className="h-4 w-4" />
-            </Button>
-
-            <Button 
-              variant={activeTool === 'note' ? 'default' : 'ghost'} 
-              size="icon" 
-              className="h-8 w-8 rounded-full hidden sm:flex"
-              onClick={() => setActiveTool(activeTool === 'note' ? 'select' : 'note')}
-            >
-              <Plus className="h-4 w-4" />
-            </Button>
-
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button 
-                  variant={immersiveMode ? 'default' : 'ghost'} 
-                  size="icon" 
-                  className="h-8 w-8 rounded-full hidden md:flex"
-                  onClick={toggleImmersive}
-                >
-                  <ScanLine className="h-4 w-4" />
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent>沉浸模式 (I)</TooltipContent>
-            </Tooltip>
-
-            <Sheet>
-              <SheetTrigger asChild>
-                <Button variant="ghost" size="icon" className="h-8 w-8 rounded-full">
-                  <MoreVertical className="h-4 w-4" />
-                </Button>
-              </SheetTrigger>
-              <SheetContent side="bottom" className="h-auto">
-                <SheetHeader>
-                  <SheetTitle className="text-left">{book.title}</SheetTitle>
-                </SheetHeader>
-                <div className="grid grid-cols-4 gap-4 mt-4">
-                  <Button variant="outline" className="flex-col h-auto py-4" onClick={() => setViewMode('thumbnails')}>
-                    <LayoutGrid className="h-5 w-5 mb-2" />
-                    <span className="text-xs">缩略图</span>
+            <div className="flex items-center gap-1">
+              {!isMobile && (
+                <>
+                  <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => handleZoom(-0.2)}>
+                    <ZoomOut className="h-4 w-4" />
                   </Button>
-                  <Button variant="outline" className="flex-col h-auto py-4" onClick={fitToWidth}>
-                    <Maximize2 className="h-5 w-5 mb-2" />
-                    <span className="text-xs">适应宽度</span>
+                  <span className="text-xs w-10 text-center font-mono">{Math.round(scale * 100)}%</span>
+                  <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => handleZoom(0.2)}>
+                    <ZoomIn className="h-4 w-4" />
                   </Button>
-                  <Button variant="outline" className="flex-col h-auto py-4" onClick={() => setRotation(r => (r + 90) % 360)}>
-                    <RotateCw className="h-5 w-5 mb-2" />
-                    <span className="text-xs">旋转</span>
+                  <div className="w-px h-4 bg-border mx-1" />
+                </>
+              )}
+              <Sheet>
+                <SheetTrigger asChild>
+                  <Button variant="ghost" size="icon" className="h-8 w-8">
+                    <MoreVertical className="h-4 w-4" />
                   </Button>
-                  <Button variant="outline" className="flex-col h-auto py-4" onClick={toggleFullscreen}>
-                    {isFullscreen ? <Minimize2 className="h-5 w-5 mb-2" /> : <Maximize2 className="h-5 w-5 mb-2" />}
-                    <span className="text-xs">全屏</span>
-                  </Button>
-                </div>
-                <div className="mt-4 pt-4 border-t space-y-2">
-                  <Button variant="outline" className="w-full" onClick={() => setIsDownloadDialogOpen(true)}>
-                    <Download className="h-4 w-4 mr-2" />
-                    下载 PDF
-                  </Button>
-                  <div className="flex gap-2">
-                    <Button 
-                      variant={activeTool === 'highlight' ? 'default' : 'outline'} 
-                      className="flex-1"
-                      onClick={() => setActiveTool(activeTool === 'highlight' ? 'select' : 'highlight')}
-                    >
-                      <Highlighter className="h-4 w-4 mr-2" />
-                      高亮模式
+                </SheetTrigger>
+                <SheetContent side="bottom" className="h-auto pb-8">
+                  <SheetHeader className="pb-4">
+                    <SheetTitle className="text-left text-sm">{book.title}</SheetTitle>
+                  </SheetHeader>
+                  <div className="grid grid-cols-4 gap-3">
+                    <Button variant="outline" className="flex-col h-auto py-3 gap-1" onClick={() => setViewMode('thumbnails')}>
+                      <LayoutGrid className="h-5 w-5" />
+                      <span className="text-[10px]">缩略图</span>
                     </Button>
-                    <Button 
-                      variant={activeTool === 'note' ? 'default' : 'outline'} 
-                      className="flex-1"
-                      onClick={() => setActiveTool(activeTool === 'note' ? 'select' : 'note')}
-                    >
-                      <Plus className="h-4 w-4 mr-2" />
-                      笔记模式
+                    <Button variant="outline" className="flex-col h-auto py-3 gap-1" onClick={fitToWidth}>
+                      <Maximize2 className="h-5 w-5" />
+                      <span className="text-[10px]">适应宽度</span>
+                    </Button>
+                    <Button variant="outline" className="flex-col h-auto py-3 gap-1" onClick={() => setRotation(r => (r + 90) % 360)}>
+                      <RotateCw className="h-5 w-5" />
+                      <span className="text-[10px]">旋转</span>
+                    </Button>
+                    <Button variant="outline" className="flex-col h-auto py-3 gap-1" onClick={toggleFullscreen}>
+                      {isFullscreen ? <Minimize2 className="h-5 w-5" /> : <Maximize2 className="h-5 w-5" />}
+                      <span className="text-[10px]">全屏</span>
                     </Button>
                   </div>
-                </div>
-              </SheetContent>
-            </Sheet>
+                  <div className="mt-4 space-y-2">
+                    <Button variant="outline" className="w-full" onClick={() => setIsDownloadDialogOpen(true)}>
+                      <Download className="h-4 w-4 mr-2" />
+                      下载 PDF
+                    </Button>
+                  </div>
+                </SheetContent>
+              </Sheet>
+            </div>
           </div>
         </div>
 
         {/* 工具模式提示 */}
         {activeTool !== 'select' && (
-          <div className="absolute top-20 left-1/2 -translate-x-1/2 z-30 bg-primary text-primary-foreground px-4 py-2 rounded-full text-sm shadow-lg animate-in fade-in slide-in-from-top-2 flex items-center gap-2">
-            <span>{activeTool === 'highlight' ? '选中文本即可高亮标注' : '点击页面添加批注'}</span>
-            <button onClick={() => setActiveTool('select')} className="hover:opacity-80">
-              <X className="h-4 w-4" />
+          <div className="absolute top-16 left-1/2 -translate-x-1/2 z-30 bg-primary text-primary-foreground px-4 py-2 rounded-full text-sm shadow-lg animate-in fade-in slide-in-from-top-2 flex items-center gap-2">
+            <span>{activeTool === 'highlight' ? '选中文本即可高亮' : '点击页面添加批注'}</span>
+            <button onClick={() => setActiveTool('select')} className="hover:opacity-80 p-1">
+              <X className="h-3 w-3" />
             </button>
           </div>
         )}
 
-        {/* 文本选中后的浮动工具栏 */}
-        <div 
-          className={cn(
-            "absolute z-50 bg-popover border shadow-xl rounded-lg p-2 flex items-center gap-2 transition-all duration-200",
-            showFloatingTools && selection ? "opacity-100 translate-y-0" : "opacity-0 translate-y-2 pointer-events-none"
-          )}
-          style={{
-            left: selection ? Math.min(...selection.rects.map(r => r.left)) + Math.max(...selection.rects.map(r => r.width)) / 2 : 0,
-            top: selection ? Math.min(...selection.rects.map(r => r.top)) - 60 : 0,
-            transform: 'translateX(-50%)',
-          }}
-        >
-          <Button size="sm" variant="default" onClick={() => addHighlight()} className="gap-1">
-            <Highlighter className="h-4 w-4" />
-            高亮
-          </Button>
-          <Button size="sm" variant="secondary" onClick={() => {
-            setActiveTool('highlight');
-            addHighlight();
-          }} className="gap-1">
-            <Type className="h-4 w-4" />
-            高亮并备注
-          </Button>
-          <Button size="sm" variant="ghost" onClick={() => { 
-            setSelection(null); 
-            window.getSelection()?.removeAllRanges(); 
-            setShowFloatingTools(false);
-          }}>
-            取消
-          </Button>
-        </div>
+        {/* 浮动工具栏（文本选中后） */}
+        {showFloatingTools && selection && (
+          <div 
+            className="absolute z-50 bg-popover border shadow-xl rounded-full p-1.5 flex items-center gap-1 animate-in zoom-in-95"
+            style={{
+              left: '50%',
+              top: Math.min(...selection.rects.map(r => r.top)) - 60,
+              transform: 'translateX(-50%)',
+            }}
+          >
+            <Button size="sm" className="rounded-full h-8 px-3" onClick={() => addHighlight()}>
+              <Highlighter className="h-3.5 w-3.5 mr-1" />
+              高亮
+            </Button>
+            <Button size="sm" variant="secondary" className="rounded-full h-8 px-3" onClick={() => {
+              addHighlight();
+              setSelectedAnnotation(annotations[annotations.length - 1] || null);
+            }}>
+              <Type className="h-3.5 w-3.5 mr-1" />
+              备注
+            </Button>
+            <Button size="sm" variant="ghost" className="rounded-full h-8 w-8 p-0" onClick={() => { 
+              setSelection(null);
+              window.getSelection()?.removeAllRanges();
+              setShowFloatingTools(false);
+            }}>
+              <X className="h-4 w-4" />
+            </Button>
+          </div>
+        )}
 
-        {/* PDF 内容区域 */}
+        {/* PDF 内容区域 - 移动端预留底部导航空间 */}
         <div 
           className={cn(
-            "flex-1 overflow-auto bg-muted/30 relative touch-pan-y select-text",
-            isFullscreen ? "bg-black" : "bg-muted/30"
+            "flex-1 overflow-auto bg-muted/20 relative touch-pan-y select-text",
+            isMobile ? "pb-20 pt-12" : "pt-14",
+            isFullscreen ? "pt-0" : ""
           )}
           onTouchStart={onTouchStart}
+          onTouchMove={onTouchMove}
           onTouchEnd={onTouchEnd}
           onMouseUp={handleTextSelection}
         >
@@ -950,161 +802,317 @@ export function PDFViewer({
               loading={
                 <div className="h-full flex items-center justify-center">
                   <div className="flex flex-col items-center gap-4">
-                    <div className="w-12 h-12 border-4 border-primary border-t-transparent rounded-full animate-spin" />
-                    <p className="text-sm text-muted-foreground">正在加载 PDF...</p>
+                    <div className="w-10 h-10 border-4 border-primary border-t-transparent rounded-full animate-spin" />
+                    <p className="text-sm text-muted-foreground">加载中...</p>
                   </div>
                 </div>
               }
             >
-              {viewMode === 'scroll' ? (
-                <div className="flex flex-col items-center gap-4 py-8">
-                  {Array.from({ length: numPages }, (_, i) => i + 1).map(page => (
-                    <div key={page} className="relative" data-page-number={page}>
-                      <Page
-                        pageNumber={page}
-                        scale={isMobile ? Math.min(scale, 1.0) : scale}
-                        rotate={rotation}
-                        renderTextLayer={true}
-                        renderAnnotationLayer={false}
-                        className="shadow-xl"
-                      />
-                      {renderHighlights(page)}
-                      <div className="absolute bottom-2 right-2 bg-black/50 text-white text-xs px-2 py-1 rounded-full">
-                        {page} / {numPages}
+              <div className={cn(
+                "min-h-full flex items-start justify-center p-4",
+                isMobile && "items-start pt-4"
+              )}>
+                <div
+                  ref={pageRef}
+                  className={cn(
+                    "relative shadow-2xl bg-white transition-all duration-200",
+                    activeTool === 'note' ? "cursor-crosshair" : "cursor-text",
+                    isPinching && "transition-none" // 缩放时禁用过渡，避免卡顿
+                  )}
+                  style={{ 
+                    touchAction: isPinching ? 'none' : 'pan-y',
+                    maxWidth: '100%',
+                    transform: isMobile ? `scale(${scale})` : undefined,
+                    transformOrigin: 'top center'
+                  }}
+                  onClick={(e) => handlePageClick(e, pageNumber)}
+                  data-page-number={pageNumber}
+                >
+                  <Page
+                    pageNumber={pageNumber}
+                    scale={isMobile ? 1 : scale} // 移动端使用 CSS 缩放，避免重绘
+                    rotate={rotation}
+                    renderTextLayer={true}
+                    renderAnnotationLayer={false}
+                    loading={
+                      <div className={cn(
+                        "flex items-center justify-center bg-white",
+                        isMobile ? "w-[350px] h-[500px]" : "w-[600px] h-[800px]"
+                      )}>
+                        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary" />
                       </div>
-                    </div>
-                  ))}
-                </div>
-              ) : (
-                <div className="min-h-full flex items-center justify-center p-4">
-                  <div
-                    ref={pageRef}
-                    className={cn(
-                      "relative inline-block shadow-2xl rounded-lg overflow-hidden bg-white transition-all",
-                      activeTool === 'note' ? "cursor-crosshair" : "cursor-text"
-                    )}
-                    style={{ 
-                      touchAction: 'pan-y',
-                      maxWidth: '100%'
-                    }}
-                    onClick={(e) => handlePageClick(e, pageNumber)}
-                    data-page-number={pageNumber}
-                  >
-                    <Page
-                      pageNumber={pageNumber}
-                      scale={isMobile ? Math.min(scale, 1.2) : scale}
-                      rotate={rotation}
-                      renderTextLayer={true}
-                      renderAnnotationLayer={false}
-                      loading={
-                        <div className="w-[300px] h-[400px] md:w-[600px] md:h-[800px] flex items-center justify-center bg-white">
-                          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary" />
-                        </div>
-                      }
-                    />
-                    
-                    {renderHighlights(pageNumber)}
-                    
-                    {/* 笔记标记 */}
-                    {currentAnnotations.filter(a => a.type === 'note').map(ann => {
-                      if (ann.x === undefined || ann.y === undefined) return null;
-                      return (
-                        <button
-                          key={ann.id}
-                          className="absolute w-8 h-8 -ml-4 -mt-4 rounded-full bg-amber-400 hover:bg-amber-500 flex items-center justify-center shadow-lg transition-transform hover:scale-110 z-10 border-2 border-white animate-in zoom-in duration-200"
-                          style={{ left: `${ann.x * 100}%`, top: `${ann.y * 100}%` }}
-                          onClick={(e: React.MouseEvent) => {
-                            e.stopPropagation();
-                            setSelectedAnnotation(ann);
-                          }}
-                        >
-                          <MessageSquare className="h-4 w-4 text-amber-900" />
-                        </button>
-                      );
-                    })}
-
-                    {/* 待添加笔记标记 */}
-                    {pendingNote?.page === pageNumber && (
-                      <div
-                        className="absolute w-8 h-8 -ml-4 -mt-4 rounded-full bg-primary flex items-center justify-center shadow-lg z-20 border-2 border-white animate-bounce"
-                        style={{ left: `${pendingNote.x * 100}%`, top: `${pendingNote.y * 100}%` }}
+                    }
+                  />
+                  
+                  {renderHighlights(pageNumber)}
+                  
+                  {/* 笔记标记 */}
+                  {currentAnnotations.filter(a => a.type === 'note').map(ann => {
+                    if (ann.x === undefined || ann.y === undefined) return null;
+                    return (
+                      <button
+                        key={ann.id}
+                        className="absolute w-8 h-8 -ml-4 -mt-4 rounded-full bg-amber-400 hover:bg-amber-500 flex items-center justify-center shadow-lg transition-transform hover:scale-110 z-10 border-2 border-white"
+                        style={{ left: `${ann.x * 100}%`, top: `${ann.y * 100}%` }}
+                        onClick={(e: React.MouseEvent) => {
+                          e.stopPropagation();
+                          setSelectedAnnotation(ann);
+                        }}
                       >
-                        <Plus className="h-4 w-4 text-primary-foreground" />
-                      </div>
-                    )}
-                  </div>
+                        <MessageSquare className="h-4 w-4 text-amber-900" />
+                      </button>
+                    );
+                  })}
+
+                  {pendingNote?.page === pageNumber && (
+                    <div
+                      className="absolute w-8 h-8 -ml-4 -mt-4 rounded-full bg-primary flex items-center justify-center shadow-lg z-20 border-2 border-white animate-bounce"
+                      style={{ left: `${pendingNote.x * 100}%`, top: `${pendingNote.y * 100}%` }}
+                    >
+                      <Plus className="h-4 w-4 text-primary-foreground" />
+                    </div>
+                  )}
                 </div>
-              )}
+              </div>
             </Document>
           )}
         </div>
 
-        {/* 进度条 */}
-        <div className="absolute bottom-0 left-0 right-0 h-1 bg-muted z-30">
-          <div 
-            className="h-full bg-primary transition-all duration-300"
-            style={{ width: `${(pageNumber / numPages) * 100}%` }}
-          />
-        </div>
-
-        {/* 移动端底部导航 */}
-        {isMobile && (
-          <div className={cn(
-            "absolute bottom-6 left-4 right-4 flex items-center justify-between transition-all duration-300 z-30",
-            !showToolbar && "translate-y-20 opacity-0 pointer-events-none"
-          )}>
-            <Button variant="secondary" size="icon" className="rounded-full shadow-xl h-12 w-12 bg-background/90 backdrop-blur" onClick={goToPrev} disabled={pageNumber <= 1}>
-              <ChevronLeft className="h-6 w-6" />
-            </Button>
-            
-            <div className="flex gap-2">
-              <Button 
-                variant={activeTool === 'highlight' ? 'default' : 'secondary'} 
-                size="icon"
-                className="rounded-full shadow-xl h-12 w-12 bg-background/90 backdrop-blur"
-                onClick={() => setActiveTool(activeTool === 'highlight' ? 'select' : 'highlight')}
+        {/* 移动端底部 Dock 栏 - 固定显示，不自动隐藏 */}
+        {isMobile && !isFullscreen && (
+          <div className="absolute bottom-0 left-0 right-0 bg-background/95 backdrop-blur-xl border-t z-50">
+            <div className="flex items-center justify-around h-16 px-2">
+              {/* 缩略图/目录 */}
+              <button 
+                onClick={() => setViewMode('thumbnails')}
+                className="flex flex-col items-center justify-center w-14 h-14 gap-0.5 text-muted-foreground active:text-foreground transition-colors"
               >
-                <Highlighter className="h-5 w-5" />
-              </Button>
-              
-              <Button 
-                variant="secondary" 
-                className="rounded-full shadow-xl px-4 h-12 bg-background/90 backdrop-blur font-mono"
+                <LayoutGrid className="h-5 w-5" />
+                <span className="text-[10px]">目录</span>
+              </button>
+
+              {/* 上一页 */}
+              <button 
+                onClick={goToPrev}
+                disabled={pageNumber <= 1}
+                className="flex items-center justify-center w-12 h-12 rounded-full active:bg-accent disabled:opacity-30 transition-colors"
+              >
+                <ChevronLeft className="h-6 w-6" />
+              </button>
+
+              {/* 页码指示器 - 可点击快速跳转 */}
+              <button 
                 onClick={() => setSidebarOpen(true)}
+                className="flex flex-col items-center justify-center min-w-[80px] h-14"
               >
-                <span className="text-sm">{pageNumber}</span>
-                <span className="text-xs text-muted-foreground mx-1">/</span>
-                <span className="text-xs text-muted-foreground">{numPages}</span>
-              </Button>
+                <span className="text-lg font-semibold leading-none">{pageNumber}</span>
+                <span className="text-[10px] text-muted-foreground mt-0.5">{numPages}</span>
+              </button>
 
-              <Button 
-                variant={activeTool === 'note' ? 'default' : 'secondary'} 
-                size="icon"
-                className="rounded-full shadow-xl h-12 w-12 bg-background/90 backdrop-blur"
-                onClick={() => setActiveTool(activeTool === 'note' ? 'select' : 'note')}
+              {/* 下一页 */}
+              <button 
+                onClick={goToNext}
+                disabled={pageNumber >= numPages}
+                className="flex items-center justify-center w-12 h-12 rounded-full active:bg-accent disabled:opacity-30 transition-colors"
               >
-                <Plus className="h-5 w-5" />
-              </Button>
+                <ChevronRight className="h-6 w-6" />
+              </button>
+
+              {/* 批注菜单 */}
+              <Sheet>
+                <SheetTrigger asChild>
+                  <button className="flex flex-col items-center justify-center w-14 h-14 gap-0.5 text-muted-foreground active:text-foreground transition-colors relative">
+                    <div className="relative">
+                      <StickyNote className="h-5 w-5" />
+                      {annotations.length > 0 && (
+                        <span className="absolute -top-1 -right-1 w-3.5 h-3.5 bg-primary text-[8px] text-primary-foreground rounded-full flex items-center justify-center font-medium">
+                          {annotations.length}
+                        </span>
+                      )}
+                    </div>
+                    <span className="text-[10px]">批注</span>
+                  </button>
+                </SheetTrigger>
+                <SheetContent side="bottom" className="h-[50vh] pb-8">
+                  <SheetHeader className="pb-4">
+                    <SheetTitle className="text-left flex items-center gap-2">
+                      <span>批注与工具</span>
+                      <span className="text-xs text-muted-foreground font-normal">({annotations.length})</span>
+                    </SheetTitle>
+                  </SheetHeader>
+                  
+                  <div className="grid grid-cols-4 gap-3 mb-6">
+                    <button
+                      onClick={() => {
+                        setActiveTool(activeTool === 'highlight' ? 'select' : 'highlight');
+                        setShowFloatingTools(false);
+                      }}
+                      className={cn(
+                        "flex flex-col items-center gap-2 p-3 rounded-xl border-2 transition-all",
+                        activeTool === 'highlight' 
+                          ? "border-primary bg-primary/5 text-primary" 
+                          : "border-border hover:border-primary/50"
+                      )}
+                    >
+                      <Highlighter className="h-6 w-6" />
+                      <span className="text-xs">高亮</span>
+                    </button>
+                    
+                    <button
+                      onClick={() => setActiveTool(activeTool === 'note' ? 'select' : 'note')}
+                      className={cn(
+                        "flex flex-col items-center gap-2 p-3 rounded-xl border-2 transition-all",
+                        activeTool === 'note' 
+                          ? "border-primary bg-primary/5 text-primary" 
+                          : "border-border hover:border-primary/50"
+                      )}
+                    >
+                      <Plus className="h-6 w-6" />
+                      <span className="text-xs">笔记</span>
+                    </button>
+
+                    <button
+                      onClick={() => {
+                        handleZoom(-0.2);
+                        toast.success(`${Math.round((scale - 0.2) * 100)}%`);
+                      }}
+                      className="flex flex-col items-center gap-2 p-3 rounded-xl border-2 border-border hover:border-primary/50 transition-all"
+                    >
+                      <ZoomOut className="h-6 w-6" />
+                      <span className="text-xs">缩小</span>
+                    </button>
+
+                    <button
+                      onClick={() => {
+                        handleZoom(0.2);
+                        toast.success(`${Math.round((scale + 0.2) * 100)}%`);
+                      }}
+                      className="flex flex-col items-center gap-2 p-3 rounded-xl border-2 border-border hover:border-primary/50 transition-all"
+                    >
+                      <ZoomIn className="h-6 w-6" />
+                      <span className="text-xs">放大</span>
+                    </button>
+                  </div>
+
+                  <ScrollArea className="h-[calc(100%-140px)]">
+                    {annotations.length === 0 ? (
+                      <div className="text-center text-muted-foreground py-12">
+                        <MessageSquare className="h-12 w-12 mx-auto mb-3 opacity-20" />
+                        <p className="text-sm">暂无批注</p>
+                        <p className="text-xs mt-1">点击上方工具开始批注</p>
+                      </div>
+                    ) : (
+                      <div className="space-y-3">
+                        {annotations.map(ann => (
+                          <div
+                            key={ann.id}
+                            onClick={() => {
+                              goToPage(ann.page);
+                              setSelectedAnnotation(ann);
+                            }}
+                            className="p-4 rounded-xl border bg-card active:bg-accent/50 transition-colors"
+                          >
+                            <div className="flex items-center justify-between mb-2">
+                              <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                                <span className={cn(
+                                  "w-2 h-2 rounded-full",
+                                  ann.type === 'highlight' ? "bg-yellow-400" : "bg-amber-400"
+                                )} />
+                                <span>第 {ann.page} 页</span>
+                              </div>
+                              <span className="text-[10px] text-muted-foreground">
+                                {formatDate(ann.createdAt)}
+                              </span>
+                            </div>
+                            <p className="text-sm line-clamp-2">{ann.content || ann.quote || '[无文本]'}</p>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </ScrollArea>
+                </SheetContent>
+              </Sheet>
             </div>
-
-            <Button variant="secondary" size="icon" className="rounded-full shadow-xl h-12 w-12 bg-background/90 backdrop-blur" onClick={goToNext} disabled={pageNumber >= numPages}>
-              <ChevronRight className="h-6 w-6" />
-            </Button>
           </div>
         )}
 
-        {/* 移动端悬浮批注按钮 */}
-        <FloatingActionButton
-          isOpen={fabOpen}
-          onToggle={() => setFabOpen(!fabOpen)}
-          onHighlight={quickHighlight}
-          onNote={quickAddNote}
-          activeTool={activeTool}
-          isMobile={isMobile}
-        />
+        {/* 手势提示 - 首次使用时显示 */}
+        {isMobile && showGestureHint && (
+          <div className="absolute inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-8 animate-in fade-in duration-300">
+            <div className="bg-background rounded-2xl p-6 max-w-sm w-full shadow-2xl space-y-4">
+              <div className="text-center">
+                <div className="w-16 h-16 bg-primary/10 rounded-full flex items-center justify-center mx-auto mb-4">
+                  <BookOpen className="h-8 w-8 text-primary" />
+                </div>
+                <h3 className="text-lg font-semibold mb-1">阅读手势</h3>
+                <p className="text-sm text-muted-foreground">掌握这些技巧，阅读更流畅</p>
+              </div>
+              
+              <div className="space-y-3 text-sm">
+                <div className="flex items-center gap-3 p-3 bg-muted rounded-lg">
+                  <div className="w-10 h-10 bg-background rounded-full flex items-center justify-center shrink-0 border">
+                    <span className="text-lg">👆</span>
+                  </div>
+                  <div>
+                    <p className="font-medium">左右滑动</p>
+                    <p className="text-xs text-muted-foreground">快速翻页</p>
+                  </div>
+                </div>
+                
+                <div className="flex items-center gap-3 p-3 bg-muted rounded-lg">
+                  <div className="w-10 h-10 bg-background rounded-full flex items-center justify-center shrink-0 border">
+                    <span className="text-lg">👐</span>
+                  </div>
+                  <div>
+                    <p className="font-medium">双指捏合</p>
+                    <p className="text-xs text-muted-foreground">放大或缩小页面</p>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-3 p-3 bg-muted rounded-lg">
+                  <div className="w-10 h-10 bg-background rounded-full flex items-center justify-center shrink-0 border">
+                    <span className="text-lg">👆👆</span>
+                  </div>
+                  <div>
+                    <p className="font-medium">双击页面</p>
+                    <p className="text-xs text-muted-foreground">快速放大/还原</p>
+                  </div>
+                </div>
+              </div>
+
+              <Button className="w-full" onClick={() => {
+                setShowGestureHint(false);
+                localStorage.setItem('pdf-gesture-hint-seen', 'true');
+              }}>
+                开始使用
+              </Button>
+            </div>
+          </div>
+        )}
+
+        {/* 桌面端悬浮工具栏 */}
+        {!isMobile && (
+          <div className="absolute bottom-6 left-1/2 -translate-x-1/2 flex items-center gap-2 bg-background/90 backdrop-blur-md border rounded-full shadow-lg px-2 py-1.5 z-30">
+            <Button variant="ghost" size="icon" className="h-8 w-8 rounded-full" onClick={goToPrev} disabled={pageNumber <= 1}>
+              <ChevronLeft className="h-4 w-4" />
+            </Button>
+            <div className="w-px h-4 bg-border" />
+            <Button variant="ghost" size="icon" className="h-8 w-8 rounded-full" onClick={() => handleZoom(-0.2)}>
+              <ZoomOut className="h-4 w-4" />
+            </Button>
+            <span className="text-xs w-12 text-center font-mono">{Math.round(scale * 100)}%</span>
+            <Button variant="ghost" size="icon" className="h-8 w-8 rounded-full" onClick={() => handleZoom(0.2)}>
+              <ZoomIn className="h-4 w-4" />
+            </Button>
+            <div className="w-px h-4 bg-border" />
+            <Button variant="ghost" size="icon" className="h-8 w-8 rounded-full" onClick={goToNext} disabled={pageNumber >= numPages}>
+              <ChevronRight className="h-4 w-4" />
+            </Button>
+          </div>
+        )}
       </div>
 
-      {/* 添加笔记对话框 */}
+      {/* 对话框组件 */}
       <Dialog open={!!pendingNote} onOpenChange={() => setPendingNote(null)}>
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
@@ -1114,11 +1122,6 @@ export function PDFViewer({
             placeholder="写下你的想法..."
             autoFocus
             className="mt-4 min-h-[100px]"
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' && e.metaKey) {
-                confirmAddNote((e.target as HTMLTextAreaElement).value);
-              }
-            }}
           />
           <div className="flex justify-end gap-2 mt-4">
             <Button variant="outline" onClick={() => setPendingNote(null)}>取消</Button>
@@ -1133,7 +1136,6 @@ export function PDFViewer({
         </DialogContent>
       </Dialog>
 
-      {/* 查看/编辑批注对话框 */}
       <Dialog open={!!selectedAnnotation} onOpenChange={() => {
         setSelectedAnnotation(null);
         setEditingAnnotation(null);
@@ -1197,7 +1199,6 @@ export function PDFViewer({
         </DialogContent>
       </Dialog>
 
-      {/* 下载对话框 */}
       <Dialog open={isDownloadDialogOpen} onOpenChange={setIsDownloadDialogOpen}>
         <DialogContent>
           <DialogHeader>
@@ -1234,54 +1235,36 @@ export function PDFViewer({
         </DialogContent>
       </Dialog>
 
-      {/* 移动端侧边栏 */}
+      {/* 移动端页码跳转侧边栏 */}
       {isMobile && (
         <Sheet open={sidebarOpen} onOpenChange={setSidebarOpen}>
-          <SheetContent side="left" className="w-[280px] p-0">
-            <SheetHeader className="p-4 border-b">
-              <SheetTitle className="text-left text-sm">{book.title}</SheetTitle>
+          <SheetContent side="bottom" className="h-[60vh] pb-8">
+            <SheetHeader className="pb-4">
+              <SheetTitle className="text-left">跳转到指定页面</SheetTitle>
             </SheetHeader>
-            <ScrollArea className="h-[calc(100vh-80px)]">
-              <Document file={fileUrl}>
-                <div className="p-2 space-y-2">
-                  {Array.from({ length: numPages }, (_, i) => i + 1).map(page => (
-                    <button
-                      key={page}
-                      onClick={() => {
-                        goToPage(page);
-                        setSidebarOpen(false);
-                      }}
-                      className={cn(
-                        "w-full flex items-center gap-3 p-2 rounded-lg transition-colors",
-                        pageNumber === page ? "bg-accent" : "hover:bg-accent/50"
-                      )}
-                    >
-                      <div className="w-12 h-16 bg-white rounded border overflow-hidden relative shrink-0">
-                        <Page pageNumber={page} scale={0.1} renderTextLayer={false} renderAnnotationLayer={false} />
-                      </div>
-                      <div className="flex-1 text-left">
-                        <span className="text-sm block">第 {page} 页</span>
-                        <span className="text-xs text-muted-foreground">
-                          {annotations.filter(a => a.page === page).length} 条批注
-                        </span>
-                      </div>
-                    </button>
-                  ))}
-                </div>
-              </Document>
+            <ScrollArea className="h-[calc(100%-80px)]">
+              <div className="grid grid-cols-5 gap-2 p-1">
+                {Array.from({ length: numPages }, (_, i) => i + 1).map(page => (
+                  <button
+                    key={page}
+                    onClick={() => {
+                      goToPage(page);
+                      setSidebarOpen(false);
+                    }}
+                    className={cn(
+                      "aspect-square rounded-lg flex items-center justify-center text-sm font-medium transition-colors",
+                      pageNumber === page 
+                        ? "bg-primary text-primary-foreground" 
+                        : "bg-muted hover:bg-accent"
+                    )}
+                  >
+                    {page}
+                  </button>
+                ))}
+              </div>
             </ScrollArea>
           </SheetContent>
         </Sheet>
-      )}
-
-      {/* 移动端手势提示 */}
-      {isMobile && pageNumber === 1 && (
-        <div className="absolute bottom-32 left-1/2 -translate-x-1/2 z-20 pointer-events-none opacity-50">
-          <div className="flex flex-col items-center gap-2 text-white text-xs bg-black/50 px-4 py-2 rounded-full">
-            <GripHorizontal className="h-4 w-4" />
-            <span>左右滑动翻页 · 双击缩放</span>
-          </div>
-        </div>
       )}
     </div>
   );
