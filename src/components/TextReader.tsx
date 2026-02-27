@@ -285,6 +285,140 @@ function saveProgress(bookId: string, progress: Omit<Progress, 'timestamp'>) {
   }
 }
 
+// ============================== 📖 虚拟滚动组件 ==============================
+interface VirtualScrollProps {
+  chapters: Chapter[];
+  settings: ReaderSettings;
+  currentTheme: { bg: string; text: string };
+  onLineInChapterChange?: (lineIndex: number) => void;
+}
+
+const VirtualScrollContent: React.FC<VirtualScrollProps> = ({ 
+  chapters, 
+  settings, 
+  currentTheme,
+  onLineInChapterChange 
+}) => {
+  const parentRef = useRef<HTMLDivElement>(null);
+  
+  // 计算总行数
+  const totalLines = useMemo(() => {
+    return chapters.reduce((sum, c) => sum + c.lines.length, 0);
+  }, [chapters]);
+
+  // 计算行高的稳定函数
+  const getItemHeight = useCallback((index: number): number => {
+    const baseHeight = Math.max(30, settings.fontSize * settings.lineHeight + settings.paragraphSpacing * 16);
+    
+    let accumulated = 0;
+    for (let i = 0; i < chapters.length; i++) {
+      const chapter = chapters[i];
+      if (index < accumulated + chapter.lines.length) {
+        const lineIndex = index - accumulated;
+        const line = chapter.lines[lineIndex] || '';
+        if (line.length > 50) {
+          return baseHeight * 1.2;
+        }
+        return baseHeight;
+      }
+      accumulated += chapter.lines.length;
+    }
+    return baseHeight;
+  }, [settings.fontSize, settings.lineHeight, settings.paragraphSpacing, chapters]);
+
+  // 虚拟滚动器
+  const virtualizer = useVirtualizer({
+    count: totalLines,
+    getScrollElement: () => parentRef.current,
+    estimateSize: getItemHeight,
+    overscan: 10,
+  });
+
+  // 渲染行
+  const renderRow = useCallback((index: number) => {
+    let accumulated = 0;
+    let chapterIndex = 0;
+    let lineIndex = 0;
+    
+    for (let i = 0; i < chapters.length; i++) {
+      const chapter = chapters[i];
+      if (index < accumulated + chapter.lines.length) {
+        chapterIndex = i;
+        lineIndex = index - accumulated;
+        break;
+      }
+      accumulated += chapter.lines.length;
+    }
+    
+    const chapter = chapters[chapterIndex];
+    if (!chapter) return null;
+    
+    const line = chapter.lines[lineIndex] || '';
+
+    return (
+      <p
+        key={`${chapterIndex}-${lineIndex}`}
+        style={{
+          fontSize: `${settings.fontSize}px`,
+          fontFamily: settings.fontFamily,
+          lineHeight: settings.lineHeight,
+          letterSpacing: `${settings.letterSpacing}px`,
+          textAlign: settings.textAlign,
+          color: currentTheme.text,
+          marginBottom: `${settings.paragraphSpacing}em`,
+          padding: '0 1rem',
+        }}
+        className="break-words"
+      >
+        {line.trim() || '\u00A0'}
+      </p>
+    );
+  }, [chapters, settings, currentTheme]);
+
+  if (totalLines === 0) {
+    return <div className="flex items-center justify-center h-full text-gray-400">暂无内容</div>;
+  }
+
+  return (
+    <div
+      ref={parentRef}
+      style={{
+        height: '100%',
+        overflowY: 'auto',
+        position: 'relative',
+        contain: 'strict',
+      }}
+    >
+      <div
+        style={{
+          height: `${virtualizer.getTotalSize()}px`,
+          width: '100%',
+          position: 'relative',
+        }}
+      >
+        {virtualizer.getVirtualItems().map((virtualItem) => (
+          <div
+            key={virtualItem.key}
+            data-index={virtualItem.index}
+            ref={(node) => virtualizer.measureElement(node)}
+            style={{
+              position: 'absolute',
+              top: 0,
+              left: 0,
+              width: '100%',
+              height: `${virtualItem.size}px`,
+              transform: `translateY(${virtualItem.start}px)`,
+              boxSizing: 'border-box',
+            }}
+          >
+            {renderRow(virtualItem.index)}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+};
+
 // ============================== 📖 主组件 ==============================
 export function TextReader({ content: rawContent, title, bookId, onClose }: TextReaderProps) {
   // ============================== 🔐 自动编码转换层 ==============================
@@ -332,23 +466,37 @@ export function TextReader({ content: rawContent, title, bookId, onClose }: Text
 
   const normalContainerRef = useRef<HTMLDivElement>(null);
   const immersiveContainerRef = useRef<HTMLDivElement>(null);
-  const parentRef = useRef<HTMLDivElement>(null); // 替代 listRef，作为虚拟滚动容器
   const autoReadRef = useRef<number | null>(null);
   const headerTimeoutRef = useRef<number | null>(null);
   const touchStartX = useRef(0);
   const touchStartY = useRef(0);
   const hasInitialized = useRef(false);
-  const currentTheme = THEMES[settings.theme] || THEMES[0];
+  
+  const currentTheme = useMemo(() => THEMES[settings.theme] || THEMES[0], [settings.theme]);
+  
   const chapters = useMemo(() => parseChapters(cleanedContent), [cleanedContent]);
 
-  const currentChapterData = chapters[currentChapter] || chapters[0];
-  const totalLinesInChapter = currentChapterData?.lines.length || 0;
+  // 确保 currentChapterData 始终有效
+  const currentChapterData = useMemo(() => {
+    if (chapters.length === 0) return null;
+    return chapters[currentChapter] || chapters[0];
+  }, [chapters, currentChapter]);
+
+  const totalLinesInChapter = currentChapterData?.lines?.length || 0;
   const totalChapters = chapters.length;
 
-  const totalLinesAll = chapters.reduce((sum, c) => sum + c.lines.length, 0);
-  const linesBeforeCurrent = chapters.slice(0, currentChapter).reduce((sum, c) => sum + c.lines.length, 0);
+  const totalLinesAll = useMemo(() => 
+    chapters.reduce((sum, c) => sum + (c.lines?.length || 0), 0),
+  [chapters]);
+
+  const linesBeforeCurrent = useMemo(() => 
+    chapters.slice(0, currentChapter).reduce((sum, c) => sum + (c.lines?.length || 0), 0),
+  [chapters, currentChapter]);
+
   const globalLineIndex = linesBeforeCurrent + lineInChapter;
-  const progressPercent = Math.round((globalLineIndex / Math.max(1, totalLinesAll)) * 100);
+  const progressPercent = useMemo(() => 
+    Math.round((globalLineIndex / Math.max(1, totalLinesAll)) * 100),
+  [globalLineIndex, totalLinesAll]);
 
   // ============================== 📌 初始化与进度恢复 ==============================
   useEffect(() => {
@@ -359,7 +507,7 @@ export function TextReader({ content: rawContent, title, bookId, onClose }: Text
     if (saved.chapter >= 0 && saved.chapter < chapters.length) {
       setCurrentChapter(saved.chapter);
       const chapter = chapters[saved.chapter];
-      const maxLine = Math.max(0, (chapter?.lines.length || 1) - 1);
+      const maxLine = Math.max(0, (chapter?.lines?.length || 1) - 1);
       setLineInChapter(Math.min(saved.lineInChapter, maxLine));
     } else if (chapters.length > 0) {
       setCurrentChapter(0);
@@ -370,7 +518,7 @@ export function TextReader({ content: rawContent, title, bookId, onClose }: Text
   // 定时保存进度（防高频写入）
   useEffect(() => {
     const save = () => saveProgress(bookId, { chapter: currentChapter, lineInChapter });
-    const id = setTimeout(save, 500); // 节流处理
+    const id = setTimeout(save, 500);
     return () => clearTimeout(id);
   }, [currentChapter, lineInChapter, bookId]);
 
@@ -404,7 +552,7 @@ export function TextReader({ content: rawContent, title, bookId, onClose }: Text
     return () => {
       if (autoReadRef.current) clearInterval(autoReadRef.current);
     };
-  }, [isAutoReading, autoReadSpeed, settings.pageMode, lineInChapter, isImmersive]);
+  }, [isAutoReading, autoReadSpeed, settings.pageMode, isImmersive, lineInChapter, currentChapter, chapters]);
 
   // ============================== ⚙️ 设置持久化 ==============================
   useEffect(() => {
@@ -467,82 +615,13 @@ export function TextReader({ content: rawContent, title, bookId, onClose }: Text
     };
     window.addEventListener('keydown', handleKey);
     return () => window.removeEventListener('keydown', handleKey);
-  }, [showSettings, showChapters, chapters.length, settings.pageMode, isImmersive]);
-
-  // ============================== 📐 虚拟滚动计算 ==============================
-  const getItemHeight = useCallback(
-    (index: number): number => {
-      // 基础高度计算
-      const baseHeight = Math.max(30, settings.fontSize * settings.lineHeight + settings.paragraphSpacing * 16);
-      
-      // 尝试获取对应行的文本长度来调整高度
-      let accumulated = 0;
-      for (let i = 0; i < chapters.length; i++) {
-        const chapter = chapters[i];
-        if (index < accumulated + chapter.lines.length) {
-          const lineIndex = index - accumulated;
-          const line = chapter.lines[lineIndex] || '';
-          // 根据行长度适当调整高度
-          if (line.length > 50) {
-            return baseHeight * 1.2;
-          }
-          return baseHeight;
-        }
-        accumulated += chapter.lines.length;
-      }
-      return baseHeight;
-    },
-    [settings.fontSize, settings.lineHeight, settings.paragraphSpacing, chapters]
-  );
-
-  const findChapterByLineIndex = useCallback(
-    (globalLineIndex: number): number => {
-      let accumulated = 0;
-      for (let i = 0; i < chapters.length; i++) {
-        accumulated += chapters[i].lines.length;
-        if (accumulated > globalLineIndex) return i;
-      }
-      return Math.max(0, chapters.length - 1);
-    },
-    [chapters]
-  );
-
-  // ✅ 重写 renderRow：只接收 index
-  const renderRow = useCallback(
-    (index: number) => {
-      const chapterIndex = findChapterByLineIndex(index);
-      const chapter = chapters[chapterIndex];
-      if (!chapter) return null;
-
-      const lineIndex = index - chapters.slice(0, chapterIndex).reduce((sum, c) => sum + c.lines.length, 0);
-      const line = chapter.lines[lineIndex] || '';
-
-      return (
-        <p
-          key={`${chapterIndex}-${lineIndex}`}
-          style={{
-            fontSize: `${settings.fontSize}px`,
-            fontFamily: settings.fontFamily,
-            lineHeight: settings.lineHeight,
-            letterSpacing: `${settings.letterSpacing}px`,
-            textAlign: settings.textAlign,
-            color: currentTheme.text,
-            marginBottom: `${settings.paragraphSpacing}em`,
-            padding: '0 1rem',
-          }}
-          className="break-words"
-        >
-          {line.trim() || '\u00A0'}
-        </p>
-      );
-    },
-    [chapters, settings, currentTheme, findChapterByLineIndex]
-  );
+  }, [showSettings, showChapters, chapters.length, settings.pageMode, isImmersive, lineInChapter, currentChapter]);
 
   // ============================== 🚪 导航控制 ==============================
-  const goToNext = () => {
+  const goToNext = useCallback(() => {
     if (settings.pageMode === 'page') {
-      const nextLine = lineInChapter + 25;
+      const linesPerPage = 25;
+      const nextLine = lineInChapter + linesPerPage;
       if (nextLine >= totalLinesInChapter && currentChapter < chapters.length - 1) {
         setCurrentChapter(prev => prev + 1);
         setLineInChapter(0);
@@ -555,14 +634,17 @@ export function TextReader({ content: rawContent, title, bookId, onClose }: Text
         activeContainer.scrollBy({ top: activeContainer.clientHeight * 0.9, behavior: 'smooth' });
       }
     }
-  };
+  }, [settings.pageMode, lineInChapter, totalLinesInChapter, currentChapter, chapters.length, isImmersive]);
 
-  const goToPrev = () => {
+  const goToPrev = useCallback(() => {
     if (settings.pageMode === 'page') {
-      const prevLine = lineInChapter - 25;
+      const linesPerPage = 25;
+      const prevLine = lineInChapter - linesPerPage;
       if (prevLine < 0 && currentChapter > 0) {
+        const prevChapter = chapters[currentChapter - 1];
+        const prevChapterLines = prevChapter?.lines?.length || 0;
         setCurrentChapter(currentChapter - 1);
-        setLineInChapter(0);
+        setLineInChapter(Math.max(0, prevChapterLines - linesPerPage));
       } else if (prevLine >= 0) {
         setLineInChapter(prevLine);
       }
@@ -572,43 +654,51 @@ export function TextReader({ content: rawContent, title, bookId, onClose }: Text
         activeContainer.scrollBy({ top: -activeContainer.clientHeight * 0.9, behavior: 'smooth' });
       }
     }
-  };
+  }, [settings.pageMode, lineInChapter, currentChapter, chapters, isImmersive]);
 
-  const goToChapter = (index: number) => {
+  const goToChapter = useCallback((index: number) => {
     if (index < 0 || index >= chapters.length) return;
     setCurrentChapter(index);
     setLineInChapter(0);
     setShowChapters(false);
-  };
+    
+    // 滚动到顶部
+    const container = isImmersive ? immersiveContainerRef.current : normalContainerRef.current;
+    if (container) container.scrollTop = 0;
+  }, [chapters.length, isImmersive]);
 
-  const toggleImmersive = () => {
+  const toggleImmersive = useCallback(() => {
     const newImmersive = !isImmersive;
     setIsImmersive(newImmersive);
     if (newImmersive) {
       setShowHeader(false);
-      document.documentElement.requestFullscreen().catch(err => console.warn('Fullscreen failed:', err));
+      if (document.documentElement.requestFullscreen) {
+        document.documentElement.requestFullscreen().catch(err => console.warn('Fullscreen failed:', err));
+      }
     } else {
       setShowHeader(true);
-      if (document.fullscreenElement) document.exitFullscreen().catch(err => console.warn('Exit fullscreen failed:', err));
+      if (document.fullscreenElement && document.exitFullscreen) {
+        document.exitFullscreen().catch(err => console.warn('Exit fullscreen failed:', err));
+      }
     }
-  };
+  }, [isImmersive]);
 
   // ============================== 🖱️ 触控交互 ==============================
-  const onTouchStart = (e: React.TouchEvent) => {
+  const onTouchStart = useCallback((e: React.TouchEvent) => {
     touchStartX.current = e.touches[0].clientX;
     touchStartY.current = e.touches[0].clientY;
-  };
+  }, []);
 
-  const onTouchEnd = (e: React.TouchEvent) => {
+  const onTouchEnd = useCallback((e: React.TouchEvent) => {
     const deltaX = touchStartX.current - e.changedTouches[0].clientX;
     const deltaY = touchStartY.current - e.changedTouches[0].clientY;
     if (Math.abs(deltaX) > Math.abs(deltaY) && Math.abs(deltaX) > 50) {
       if (deltaX > 0) goToNext();
       else goToPrev();
     }
-  };
+  }, [goToNext, goToPrev]);
 
-  const onContentClick = (e: React.MouseEvent) => {
+  const onContentClick = useCallback((e: React.MouseEvent) => {
     if (settings.pageMode === 'scroll' && !isImmersive) return;
     const activeContainer = isImmersive ? immersiveContainerRef.current : normalContainerRef.current;
     const rect = activeContainer?.getBoundingClientRect();
@@ -616,67 +706,62 @@ export function TextReader({ content: rawContent, title, bookId, onClose }: Text
     const x = e.clientX - rect.left;
     if (x < rect.width * 0.25) goToPrev();
     else if (x > rect.width * 0.75) goToNext();
-  };
+  }, [settings.pageMode, isImmersive, goToNext, goToPrev]);
 
-  const updateSetting = <K extends keyof ReaderSettings>(key: K, value: ReaderSettings[K]) => {
+  const updateSetting = useCallback(<K extends keyof ReaderSettings>(key: K, value: ReaderSettings[K]) => {
     setSettings(prev => ({ ...prev, [key]: value }));
-  };
+  }, []);
 
   // ============================== 🖼️ 渲染逻辑 ==============================
-  const renderVirtualScroll = () => {
-    // 预计算所有行高（用于 estimateSize）
-    const itemSizes = useMemo(() => {
-      return Array.from({ length: totalLinesAll }, (_, i) => getItemHeight(i));
-    }, [totalLinesAll, getItemHeight]);
+  const renderContent = () => {
+    if (!currentChapterData || !currentChapterData.lines) {
+      return <div className="flex items-center justify-center h-full">加载中...</div>;
+    }
 
-    const virtualizer = useVirtualizer({
-      count: totalLinesAll,
-      getScrollElement: () => parentRef.current,
-      estimateSize: (index) => itemSizes[index] ?? 30,
-      overscan: 10, // 增加overscan以提高流畅度
-    });
+    if (settings.pageMode === 'page') {
+      const startLine = lineInChapter;
+      const endLine = Math.min(lineInChapter + 25, currentChapterData.lines.length);
+      const visibleLines = currentChapterData.lines.slice(startLine, endLine);
+      
+      if (visibleLines.length === 0) {
+        return <div className="flex items-center justify-center h-full">本章无内容</div>;
+      }
 
-    return (
-      <div
-        ref={parentRef}
-        style={{
-          height: '100%',
-          overflowY: 'auto',
-          position: 'relative',
-          contain: 'strict',
-        }}
-      >
-        <div
-          style={{
-            height: `${virtualizer.getTotalSize()}px`,
-            width: '100%',
-            position: 'relative',
-          }}
-        >
-          {virtualizer.getVirtualItems().map((virtualItem) => (
-            <div
-              key={virtualItem.key}
-              data-index={virtualItem.index}
-              ref={(node) => virtualizer.measureElement(node)}
+      return (
+        <div className="max-w-2xl mx-auto">
+          {visibleLines.map((line, idx) => (
+            <p
+              key={`${currentChapter}-${startLine + idx}`}
               style={{
-                position: 'absolute',
-                top: 0,
-                left: 0,
-                width: '100%',
-                height: `${virtualItem.size}px`,
-                transform: `translateY(${virtualItem.start}px)`,
-                boxSizing: 'border-box',
+                fontSize: `${settings.fontSize}px`,
+                fontFamily: settings.fontFamily,
+                lineHeight: settings.lineHeight,
+                letterSpacing: `${settings.letterSpacing}px`,
+                textAlign: settings.textAlign,
+                color: currentTheme.text,
+                marginBottom: `${settings.paragraphSpacing}em`,
+                padding: '0 1rem',
               }}
+              className="break-words"
             >
-              {renderRow(virtualItem.index)}
-            </div>
+              {line?.trim() || '\u00A0'}
+            </p>
           ))}
         </div>
-      </div>
+      );
+    }
+
+    // 滚动模式使用虚拟滚动
+    return (
+      <VirtualScrollContent 
+        chapters={chapters} 
+        settings={settings} 
+        currentTheme={currentTheme}
+      />
     );
   };
 
-  const ChapterList = ({ onSelect }: { onSelect: (index: number) => void }) => (
+  const ChapterList = useCallback(({ onSelect }: { onSelect: (index: number) => void }) => (
     <div className="py-2">
       {chapters.map((chapter, index) => (
         <button
@@ -698,12 +783,16 @@ export function TextReader({ content: rawContent, title, bookId, onClose }: Text
         </button>
       ))}
     </div>
-  );
+  ), [chapters, currentChapter, currentTheme.text]);
 
   // ============================== 🍃 沉浸模式 ==============================
   if (isImmersive) {
     return (
-      <div className="fixed inset-0 z-[100] flex flex-col" style={{ backgroundColor: currentTheme.bg }}>
+      <div 
+        className="fixed inset-0 z-[100] flex flex-col" 
+        style={{ backgroundColor: currentTheme.bg }}
+        key={`immersive-${currentChapter}`} // 强制重新挂载避免迟钝
+      >
         {/* Header & Controls */}
         <div className="absolute bottom-6 left-6 z-10 text-xs opacity-50" style={{ color: currentTheme.text }}>
           {currentTime}
@@ -713,13 +802,15 @@ export function TextReader({ content: rawContent, title, bookId, onClose }: Text
           className="absolute top-4 left-4 z-10 h-9 px-4 rounded-full text-sm font-medium transition-all hover:scale-105"
           style={{ backgroundColor: `${currentTheme.text}30`, color: currentTheme.text }}
         >
-          <span className="max-w-[140px] truncate">{currentChapterData?.title.slice(0, 15)}</span>
+          <span className="max-w-[140px] truncate block">
+            {currentChapterData?.title ? currentChapterData.title.slice(0, 15) : '无章节'}
+          </span>
         </button>
         <div className="absolute top-4 right-4 z-10 flex items-center gap-2">
           <button
             onClick={() => currentChapter > 0 && goToChapter(currentChapter - 1)}
             disabled={currentChapter === 0}
-            className="w-9 h-9 rounded-full flex items-center justify-center"
+            className="w-9 h-9 rounded-full flex items-center justify-center disabled:opacity-30"
             style={{ backgroundColor: `${currentTheme.text}25`, color: currentTheme.text }}
           >
             <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -729,7 +820,7 @@ export function TextReader({ content: rawContent, title, bookId, onClose }: Text
           <button
             onClick={() => currentChapter < chapters.length - 1 && goToChapter(currentChapter + 1)}
             disabled={currentChapter >= chapters.length - 1}
-            className="w-9 h-9 rounded-full flex items-center justify-center"
+            className="w-9 h-9 rounded-full flex items-center justify-center disabled:opacity-30"
             style={{ backgroundColor: `${currentTheme.text}25`, color: currentTheme.text }}
           >
             <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -757,9 +848,9 @@ export function TextReader({ content: rawContent, title, bookId, onClose }: Text
         >
           {settings.pageMode === 'page' ? (
             <div className="max-w-2xl mx-auto">
-              {currentChapterData?.lines.slice(lineInChapter, lineInChapter + 25).map((line, idx) => (
+              {currentChapterData?.lines?.slice(lineInChapter, lineInChapter + 25).map((line, idx) => (
                 <p
-                  key={idx}
+                  key={`imm-${currentChapter}-${lineInChapter + idx}`}
                   style={{
                     fontSize: `${settings.fontSize}px`,
                     fontFamily: settings.fontFamily,
@@ -772,12 +863,16 @@ export function TextReader({ content: rawContent, title, bookId, onClose }: Text
                   }}
                   className="break-words"
                 >
-                  {line.trim() || '\u00A0'}
+                  {line?.trim() || '\u00A0'}
                 </p>
               ))}
             </div>
           ) : (
-            renderVirtualScroll()
+            <VirtualScrollContent 
+              chapters={chapters} 
+              settings={settings} 
+              currentTheme={currentTheme}
+            />
           )}
         </div>
 
@@ -817,7 +912,11 @@ export function TextReader({ content: rawContent, title, bookId, onClose }: Text
 
   // ============================== 🖼️ 默认模式 ==============================
   return (
-    <div className="fixed inset-0 z-50 flex flex-col" style={{ backgroundColor: currentTheme.bg }}>
+    <div 
+      className="fixed inset-0 z-50 flex flex-col" 
+      style={{ backgroundColor: currentTheme.bg }}
+      key={`normal-${currentChapter}`}
+    >
       <header
         className={`flex items-center justify-between px-3 py-2 border-b flex-shrink-0 transition-all duration-300 ${
           showHeader ? 'opacity-100' : 'opacity-0 -translate-y-full pointer-events-none'
@@ -869,7 +968,7 @@ export function TextReader({ content: rawContent, title, bookId, onClose }: Text
           >
             <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <circle cx="12" cy="12" r="3"></circle>
-              <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.5 1.65 1.65 0 0 0 1.5 1 1.65 1.65 0 0 0 1-1.5 1.65 1.65 0 0 0-1.5-1 1.65 1.65 0 0 0-1 1.5 1.65 1.65 0 0 0 1.5 1 1.65 1.65 0 0 0 1-1.5 1.65 1.65 0 0 0-1.5-1z"></path>
+              <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V23a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
             </svg>
           </button>
         </div>
@@ -883,30 +982,7 @@ export function TextReader({ content: rawContent, title, bookId, onClose }: Text
         onClick={onContentClick}
       >
         <div className="max-w-2xl mx-auto px-4 py-4">
-          {settings.pageMode === 'page' ? (
-            <div className="max-w-2xl mx-auto">
-              {currentChapterData?.lines.slice(lineInChapter, lineInChapter + 25).map((line, idx) => (
-                <p
-                  key={idx}
-                  style={{
-                    fontSize: `${settings.fontSize}px`,
-                    fontFamily: settings.fontFamily,
-                    lineHeight: settings.lineHeight,
-                    letterSpacing: `${settings.letterSpacing}px`,
-                    textAlign: settings.textAlign,
-                    color: currentTheme.text,
-                    marginBottom: `${settings.paragraphSpacing}em`,
-                    padding: '0 1rem',
-                  }}
-                  className="break-words"
-                >
-                  {line.trim() || '\u00A0'}
-                </p>
-              ))}
-            </div>
-          ) : (
-            renderVirtualScroll()
-          )}
+          {renderContent()}
         </div>
       </div>
 
