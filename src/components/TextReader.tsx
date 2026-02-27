@@ -292,6 +292,7 @@ interface VirtualScrollProps {
   currentTheme: { bg: string; text: string };
   scrollRef?: React.RefObject<HTMLDivElement>;
   onScrollProgress?: (chapterIndex: number, lineInChapter: number) => void;
+  targetChapterIndex?: number; // 新增：目标章节索引，用于章节跳转
 }
 
 const VirtualScrollContent: React.FC<VirtualScrollProps> = ({ 
@@ -299,7 +300,8 @@ const VirtualScrollContent: React.FC<VirtualScrollProps> = ({
   settings, 
   currentTheme,
   scrollRef,
-  onScrollProgress 
+  onScrollProgress,
+  targetChapterIndex
 }) => {
   // 使用传入的 ref 或创建新的
   const internalRef = useRef<HTMLDivElement>(null);
@@ -307,28 +309,28 @@ const VirtualScrollContent: React.FC<VirtualScrollProps> = ({
   
   // 计算总行数
   const totalLines = useMemo(() => {
-    return chapters.reduce((sum, c) => sum + c.lines.length, 0);
+    return chapters.reduce((sum, c) => sum + (c.lines?.length || 0), 0);
   }, [chapters]);
 
-  // 计算行高的稳定函数
+  // 计算行高的稳定函数 - 修复：确保返回值至少为 1
   const getItemHeight = useCallback((index: number): number => {
-    const baseHeight = Math.max(30, settings.fontSize * settings.lineHeight + settings.paragraphSpacing * 16);
+    const baseHeight = Math.max(20, settings.fontSize * settings.lineHeight);
     
     let accumulated = 0;
     for (let i = 0; i < chapters.length; i++) {
       const chapter = chapters[i];
-      if (index < accumulated + chapter.lines.length) {
+      const chapterLines = chapter.lines?.length || 0;
+      if (index < accumulated + chapterLines) {
         const lineIndex = index - accumulated;
         const line = chapter.lines[lineIndex] || '';
-        if (line.length > 50) {
-          return baseHeight * 1.2;
-        }
+        // 根据内容长度调整高度
+        if (line.length > 50) return baseHeight * 1.5;
         return baseHeight;
       }
-      accumulated += chapter.lines.length;
+      accumulated += chapterLines;
     }
     return baseHeight;
-  }, [settings.fontSize, settings.lineHeight, settings.paragraphSpacing, chapters]);
+  }, [settings.fontSize, settings.lineHeight, chapters]);
 
   // 虚拟滚动器
   const virtualizer = useVirtualizer({
@@ -337,6 +339,22 @@ const VirtualScrollContent: React.FC<VirtualScrollProps> = ({
     estimateSize: getItemHeight,
     overscan: 10,
   });
+
+  // 修复：监听目标章节变化，滚动到指定章节
+  useEffect(() => {
+    if (typeof targetChapterIndex === 'number' && targetChapterIndex >= 0 && virtualizer) {
+      // 计算目标章节的第一行索引
+      let targetLineIndex = 0;
+      for (let i = 0; i < targetChapterIndex && i < chapters.length; i++) {
+        targetLineIndex += chapters[i].lines?.length || 0;
+      }
+      
+      // 使用 setTimeout 确保在渲染后执行
+      setTimeout(() => {
+        virtualizer.scrollToIndex(targetLineIndex, { align: 'start' });
+      }, 0);
+    }
+  }, [targetChapterIndex, chapters, virtualizer]);
 
   // 监听滚动更新章节进度（用于沉浸模式）
   useEffect(() => {
@@ -351,7 +369,7 @@ const VirtualScrollContent: React.FC<VirtualScrollProps> = ({
         // 计算当前章节和行内位置
         let accumulated = 0;
         for (let i = 0; i < chapters.length; i++) {
-          const chapterLines = chapters[i].lines.length;
+          const chapterLines = chapters[i].lines?.length || 0;
           if (firstVisibleIndex < accumulated + chapterLines) {
             const lineInChap = firstVisibleIndex - accumulated;
             onScrollProgress(i, lineInChap);
@@ -375,12 +393,13 @@ const VirtualScrollContent: React.FC<VirtualScrollProps> = ({
     
     for (let i = 0; i < chapters.length; i++) {
       const chapter = chapters[i];
-      if (index < accumulated + chapter.lines.length) {
+      const chapterLines = chapter.lines?.length || 0;
+      if (index < accumulated + chapterLines) {
         chapterIndex = i;
         lineIndex = index - accumulated;
         break;
       }
-      accumulated += chapter.lines.length;
+      accumulated += chapterLines;
     }
     
     const chapter = chapters[chapterIndex];
@@ -417,9 +436,9 @@ const VirtualScrollContent: React.FC<VirtualScrollProps> = ({
       ref={parentRef}
       style={{
         height: '100%',
+        width: '100%',
         overflowY: 'auto',
         position: 'relative',
-        contain: 'strict',
       }}
     >
       <div
@@ -433,7 +452,7 @@ const VirtualScrollContent: React.FC<VirtualScrollProps> = ({
           <div
             key={virtualItem.key}
             data-index={virtualItem.index}
-            ref={(node) => virtualizer.measureElement(node)}
+            ref={virtualizer.measureElement}
             style={{
               position: 'absolute',
               top: 0,
@@ -496,6 +515,9 @@ export function TextReader({ content: rawContent, title, bookId, onClose }: Text
   const [isImmersive, setIsImmersive] = useState(false);
   const [showHeader, setShowHeader] = useState(true);
   const [currentTime, setCurrentTime] = useState('');
+  
+  // 新增：用于触发虚拟滚动章节跳转的 key
+  const [scrollTargetChapter, setScrollTargetChapter] = useState<number>(0);
 
   const normalContainerRef = useRef<HTMLDivElement>(null);
   const immersiveContainerRef = useRef<HTMLDivElement>(null);
@@ -539,11 +561,13 @@ export function TextReader({ content: rawContent, title, bookId, onClose }: Text
     const saved = getSavedProgress(bookId);
     if (saved.chapter >= 0 && saved.chapter < chapters.length) {
       setCurrentChapter(saved.chapter);
+      setScrollTargetChapter(saved.chapter); // 设置滚动目标
       const chapter = chapters[saved.chapter];
       const maxLine = Math.max(0, (chapter?.lines?.length || 1) - 1);
       setLineInChapter(Math.min(saved.lineInChapter, maxLine));
     } else if (chapters.length > 0) {
       setCurrentChapter(0);
+      setScrollTargetChapter(0);
       setLineInChapter(0);
     }
   }, [bookId, chapters]);
@@ -653,7 +677,9 @@ export function TextReader({ content: rawContent, title, bookId, onClose }: Text
   // ============================== 🚪 导航控制 ==============================
   const scrollToTop = useCallback(() => {
     const container = isImmersive ? immersiveContainerRef.current : normalContainerRef.current;
-    if (container) container.scrollTop = 0;
+    if (container) {
+      container.scrollTop = 0;
+    }
   }, [isImmersive]);
 
   const goToNext = useCallback(() => {
@@ -663,10 +689,18 @@ export function TextReader({ content: rawContent, title, bookId, onClose }: Text
       if (nextLine >= totalLinesInChapter && currentChapter < chapters.length - 1) {
         setCurrentChapter(prev => prev + 1);
         setLineInChapter(0);
-        // 修复：切换章节后回到顶部
-        setTimeout(scrollToTop, 0);
+        // 修复：强制回到顶部
+        setTimeout(() => {
+          const container = isImmersive ? immersiveContainerRef.current : normalContainerRef.current;
+          if (container) container.scrollTop = 0;
+        }, 0);
       } else if (nextLine < totalLinesInChapter) {
         setLineInChapter(nextLine);
+        // 修复：即使不切换章节，翻页也要回到顶部
+        setTimeout(() => {
+          const container = isImmersive ? immersiveContainerRef.current : normalContainerRef.current;
+          if (container) container.scrollTop = 0;
+        }, 0);
       }
     } else {
       const activeContainer = isImmersive ? immersiveContainerRef.current : normalContainerRef.current;
@@ -674,7 +708,7 @@ export function TextReader({ content: rawContent, title, bookId, onClose }: Text
         activeContainer.scrollBy({ top: activeContainer.clientHeight * 0.9, behavior: 'smooth' });
       }
     }
-  }, [settings.pageMode, lineInChapter, totalLinesInChapter, currentChapter, chapters.length, isImmersive, scrollToTop]);
+  }, [settings.pageMode, lineInChapter, totalLinesInChapter, currentChapter, chapters.length, isImmersive]);
 
   const goToPrev = useCallback(() => {
     if (settings.pageMode === 'page') {
@@ -687,9 +721,17 @@ export function TextReader({ content: rawContent, title, bookId, onClose }: Text
         // 修复：切换到前一章的最后一页
         const lastPageStart = Math.max(0, prevChapterLines - linesPerPage);
         setLineInChapter(lastPageStart);
-        setTimeout(scrollToTop, 0);
+        setTimeout(() => {
+          const container = isImmersive ? immersiveContainerRef.current : normalContainerRef.current;
+          if (container) container.scrollTop = 0;
+        }, 0);
       } else if (prevLine >= 0) {
         setLineInChapter(prevLine);
+        // 修复：即使不切换章节，翻页也要回到顶部
+        setTimeout(() => {
+          const container = isImmersive ? immersiveContainerRef.current : normalContainerRef.current;
+          if (container) container.scrollTop = 0;
+        }, 0);
       }
     } else {
       const activeContainer = isImmersive ? immersiveContainerRef.current : normalContainerRef.current;
@@ -697,15 +739,16 @@ export function TextReader({ content: rawContent, title, bookId, onClose }: Text
         activeContainer.scrollBy({ top: -activeContainer.clientHeight * 0.9, behavior: 'smooth' });
       }
     }
-  }, [settings.pageMode, lineInChapter, currentChapter, chapters, isImmersive, scrollToTop]);
+  }, [settings.pageMode, lineInChapter, currentChapter, chapters, isImmersive]);
 
   const goToChapter = useCallback((index: number) => {
     if (index < 0 || index >= chapters.length) return;
     setCurrentChapter(index);
     setLineInChapter(0);
+    setScrollTargetChapter(index); // 修复：设置滚动目标，触发虚拟滚动跳转
     setShowChapters(false);
     
-    // 修复：确保滚动到顶部
+    // 修复：确保滚动到顶部（对于翻页模式）
     setTimeout(() => {
       const container = isImmersive ? immersiveContainerRef.current : normalContainerRef.current;
       if (container) container.scrollTop = 0;
@@ -804,14 +847,15 @@ export function TextReader({ content: rawContent, title, bookId, onClose }: Text
       );
     }
 
-    // 滚动模式使用虚拟滚动 - 修复：传递正确的 ref 和回调
+    // 修复：滚动模式使用虚拟滚动，确保传递正确的 ref 和 targetChapterIndex
     return (
       <VirtualScrollContent 
         chapters={chapters} 
         settings={settings} 
         currentTheme={currentTheme}
-        scrollRef={isImmersive ? immersiveContainerRef : undefined}
+        scrollRef={isImmersive ? immersiveContainerRef : normalContainerRef}
         onScrollProgress={isImmersive ? handleScrollProgress : undefined}
+        targetChapterIndex={scrollTargetChapter}
       />
     );
   };
@@ -922,13 +966,13 @@ export function TextReader({ content: rawContent, title, bookId, onClose }: Text
               ))}
             </div>
           ) : (
-            // 修复：移除强制的 key 重新挂载，改用 onScrollProgress 更新状态
             <VirtualScrollContent 
               chapters={chapters} 
               settings={settings} 
               currentTheme={currentTheme}
               scrollRef={immersiveContainerRef}
               onScrollProgress={handleScrollProgress}
+              targetChapterIndex={scrollTargetChapter}
             />
           )}
         </div>
