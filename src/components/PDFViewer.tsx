@@ -86,13 +86,13 @@ export function PDFViewer({
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [isDownloadDialogOpen, setIsDownloadDialogOpen] = useState(false);
   const [includeAnnotations, setIncludeAnnotations] = useState(true);
-  const [viewMode, setViewMode] = useState<'single' | 'scroll' | 'thumbnails'>('single');
+  const [viewMode, setViewMode] = useState<'single' | 'thumbnails'>('single');
   const [sidebarOpen, setSidebarOpen] = useState(false);
   
-  // 视图状态：缩放和平移
+  // 视图状态
   const [viewState, setViewState] = useState<ViewState>({ scale: 1, panX: 0, panY: 0 });
   const [isPinching, setIsPinching] = useState(false);
-  const [isPanning, setIsPanning] = useState(false);
+  const [isDragging, setIsDragging] = useState(false);
   
   // 批注状态
   const [activeTool, setActiveTool] = useState<'select' | 'note' | 'highlight' | 'move'>('select');
@@ -108,11 +108,11 @@ export function PDFViewer({
   const pageRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<HTMLDivElement>(null);
   
-  // 触摸状态
-  const touchStart = useRef<{ x: number; y: number; time: number; touches: number } | null>(null);
-  const lastTouch = useRef<{ x: number; y: number; scale: number; panX: number; panY: number } | null>(null);
+  // 手势状态
+  const touchStart = useRef<{ x: number; y: number; time: number; scale: number; panX: number; panY: number } | null>(null);
+  const lastTouch = useRef<{ x: number; y: number } | null>(null);
   const initialPinchDistance = useRef<number>(0);
-  const pinchCenter = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
+  const rafId = useRef<number | null>(null);
   const controlsTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // 初始化
@@ -121,9 +121,8 @@ export function PDFViewer({
       const mobile = window.innerWidth < 768;
       setIsMobile(mobile);
       setSidebarOpen(!mobile);
-      // 移动端初始缩放适配屏幕
-      if (mobile) {
-        setViewState({ scale: 0.85, panX: 0, panY: 0 });
+      if (mobile && viewState.scale === 1) {
+        setViewState({ scale: 0.9, panX: 0, panY: 0 });
       }
     };
     checkMobile();
@@ -132,34 +131,64 @@ export function PDFViewer({
     const saved = localStorage.getItem(`pdf-progress-${book.id}`);
     if (saved) setPageNumber(parseInt(saved, 10));
     
-    return () => window.removeEventListener('resize', checkMobile);
-  }, [book.id]);
+    return () => {
+      window.removeEventListener('resize', checkMobile);
+      if (rafId.current) cancelAnimationFrame(rafId.current);
+    };
+  }, [book.id, viewState.scale]);
 
   // 控制栏自动隐藏
   const resetControlsTimer = useCallback(() => {
     if (controlsTimer.current) clearTimeout(controlsTimer.current);
     setShowControls(true);
     controlsTimer.current = setTimeout(() => {
-      if (!isPinching && !isPanning && activeTool !== 'note') {
+      if (!isPinching && !isDragging && activeTool !== 'note') {
         setShowControls(false);
       }
     }, 3000);
-  }, [isPinching, isPanning, activeTool]);
+  }, [isPinching, isDragging, activeTool]);
 
-  // 监听全屏
+  // 全屏监听
   useEffect(() => {
     const handler = () => {
       const fs = !!document.fullscreenElement;
       setIsFullscreen(fs);
       if (fs && !hasShownFullscreenHint) {
         setHasShownFullscreenHint(true);
-        toast.success('全屏模式：双指缩放查看细节，拖拽移动', { duration: 3000 });
+        toast.success('全屏模式：双指缩放，双击放大，拖拽移动', { duration: 3000 });
       }
       resetControlsTimer();
     };
     document.addEventListener('fullscreenchange', handler);
     return () => document.removeEventListener('fullscreenchange', handler);
   }, [hasShownFullscreenHint, resetControlsTimer]);
+
+  // 边界限制（防止拖出太远）
+  const constrainPan = useCallback((newPanX: number, newPanY: number, scale: number) => {
+    if (!containerRef.current || !pageRef.current) return { x: newPanX, y: newPanY };
+    
+    const containerRect = containerRef.current.getBoundingClientRect();
+    const pageWidth = pageRef.current.offsetWidth * scale;
+    const pageHeight = pageRef.current.offsetHeight * scale;
+    
+    const maxPanX = Math.max(0, (pageWidth - containerRect.width) / 2 + 50);
+    const maxPanY = Math.max(0, (pageHeight - containerRect.height) / 2 + 50);
+    
+    // 如果页面小于容器，居中显示
+    if (pageWidth <= containerRect.width) {
+      newPanX = 0;
+    } else {
+      newPanX = Math.max(-maxPanX, Math.min(maxPanX, newPanX));
+    }
+    
+    if (pageHeight <= containerRect.height) {
+      newPanY = 0;
+    } else {
+      newPanY = Math.max(-maxPanY, Math.min(maxPanY, newPanY));
+    }
+    
+    return { x: newPanX, y: newPanY };
+  }, []);
 
   const onDocumentLoadSuccess = useCallback(({ numPages }: { numPages: number }) => {
     setNumPages(numPages);
@@ -173,14 +202,14 @@ export function PDFViewer({
     const target = Math.max(1, Math.min(page, numPages));
     setPageNumber(target);
     localStorage.setItem(`pdf-progress-${book.id}`, String(target));
-    // 翻页时重置视图但保持缩放级别
+    // 翻页时平滑回到中心，但保持缩放级别
     setViewState(prev => ({ ...prev, panX: 0, panY: 0 }));
   }, [numPages, book.id]);
 
   const goToPrev = () => goToPage(pageNumber - 1);
   const goToNext = () => goToPage(pageNumber + 1);
 
-  const resetView = () => setViewState({ scale: isMobile ? 0.85 : 1, panX: 0, panY: 0 });
+  const resetView = () => setViewState({ scale: isMobile ? 0.9 : 1, panX: 0, panY: 0 });
 
   const toggleFullscreen = useCallback(async () => {
     try {
@@ -194,7 +223,7 @@ export function PDFViewer({
     }
   }, []);
 
-  // 触摸处理 - 图片式浏览
+  // 核心：触摸手势处理（优化版）
   const onTouchStart = (e: React.TouchEvent) => {
     resetControlsTimer();
     
@@ -205,124 +234,177 @@ export function PDFViewer({
       const dy = e.touches[0].pageY - e.touches[1].pageY;
       initialPinchDistance.current = Math.hypot(dx, dy);
       
-      // 计算双指中心点（相对于视口）
-      const centerX = (e.touches[0].pageX + e.touches[1].pageX) / 2;
-      const centerY = (e.touches[0].pageY + e.touches[1].pageY) / 2;
-      pinchCenter.current = { x: centerX, y: centerY };
-      
-      lastTouch.current = { 
-        x: centerX, 
-        y: centerY, 
+      touchStart.current = {
+        x: (e.touches[0].pageX + e.touches[1].pageX) / 2,
+        y: (e.touches[0].pageY + e.touches[1].pageY) / 2,
+        time: Date.now(),
         scale: viewState.scale,
         panX: viewState.panX,
         panY: viewState.panY
       };
     } else if (e.touches.length === 1) {
-      // 单指：可能是平移或批注
+      // 单指：准备拖动或点击
+      const touch = e.touches[0];
       touchStart.current = {
-        x: e.touches[0].clientX,
-        y: e.touches[0].clientY,
+        x: touch.clientX,
+        y: touch.clientY,
         time: Date.now(),
-        touches: 1
-      };
-      lastTouch.current = {
-        x: e.touches[0].clientX,
-        y: e.touches[0].clientY,
         scale: viewState.scale,
         panX: viewState.panX,
         panY: viewState.panY
       };
+      lastTouch.current = { x: touch.clientX, y: touch.clientY };
       
-      // 如果是批注模式，记录位置
+      // 批注模式：记录位置
       if (activeTool === 'note' && pageRef.current) {
         const rect = pageRef.current.getBoundingClientRect();
-        const x = (e.touches[0].clientX - rect.left) / rect.width;
-        const y = (e.touches[0].clientY - rect.top) / rect.height;
-        if (x >= 0 && x <= 1 && y >= 0 && y <= 1) {
-          setTempNote({ x, y, content: '' });
+        // 考虑当前的pan和scale计算相对位置
+        const relativeX = (touch.clientX - rect.left - viewState.panX) / (rect.width * viewState.scale);
+        const relativeY = (touch.clientY - rect.top - viewState.panY) / (rect.height * viewState.scale);
+        
+        if (relativeX >= 0 && relativeX <= 1 && relativeY >= 0 && relativeY <= 1) {
+          setTempNote({ x: relativeX, y: relativeY, content: '' });
         }
       }
     }
   };
 
   const onTouchMove = (e: React.TouchEvent) => {
-    e.preventDefault(); // 防止页面滚动
+    // 阻止默认滚动行为
+    if (e.touches.length > 1 || isDragging) {
+      e.preventDefault();
+    }
     
-    if (e.touches.length === 2 && isPinching) {
-      // 双指缩放：以双指中心为焦点缩放
+    if (e.touches.length === 2 && touchStart.current) {
+      // 双指缩放
       const dx = e.touches[0].pageX - e.touches[1].pageX;
       const dy = e.touches[0].pageY - e.touches[1].pageY;
       const distance = Math.hypot(dx, dy);
       const scaleFactor = distance / initialPinchDistance.current;
       
-      // 计算新的缩放级别
-      const newScale = Math.max(0.5, Math.min(5, lastTouch.current!.scale * scaleFactor));
+      const newScale = Math.max(0.5, Math.min(5, touchStart.current.scale * scaleFactor));
       
-      // 计算焦点偏移以保持中心点稳定
+      // 以双指中心为焦点缩放
       const centerX = (e.touches[0].pageX + e.touches[1].pageX) / 2;
       const centerY = (e.touches[0].pageY + e.touches[1].pageY) / 2;
       
-      // 简化的以焦点为中心的缩放公式
       const scaleRatio = newScale / viewState.scale;
       const newPanX = centerX - (centerX - viewState.panX) * scaleRatio;
       const newPanY = centerY - (centerY - viewState.panY) * scaleRatio;
       
-      setViewState({
-        scale: newScale,
-        panX: newPanX,
-        panY: newPanY
+      if (rafId.current) cancelAnimationFrame(rafId.current);
+      rafId.current = requestAnimationFrame(() => {
+        setViewState({
+          scale: newScale,
+          panX: newPanX,
+          panY: newPanY
+        });
       });
-    } else if (e.touches.length === 1 && lastTouch.current && !activeTool) {
-      // 单指拖拽平移（仅当不在批注模式下）
-      if (viewState.scale > 1 || isFullscreen) {
-        setIsPanning(true);
-        const dx = e.touches[0].clientX - lastTouch.current.x;
-        const dy = e.touches[0].clientY - lastTouch.current.y;
+    } else if (e.touches.length === 1 && touchStart.current && lastTouch.current) {
+      // 单指拖动（只要不是批注模式就允许拖动查看）
+      if (activeTool !== 'note' && activeTool !== 'highlight') {
+        const touch = e.touches[0];
+        const dx = touch.clientX - lastTouch.current.x;
+        const dy = touch.clientY - lastTouch.current.y;
         
-        setViewState(prev => ({
-          ...prev,
-          panX: lastTouch.current!.panX + dx,
-          panY: lastTouch.current!.panY + dy
-        }));
+        // 移动超过5px才算拖动，否则可能是点击
+        if (Math.abs(touch.clientX - touchStart.current.x) > 5 || 
+            Math.abs(touch.clientY - touchStart.current.y) > 5) {
+          setIsDragging(true);
+        }
+        
+        if (isDragging || Math.abs(dx) > 0 || Math.abs(dy) > 0) {
+          const newPanX = viewState.panX + dx;
+          const newPanY = viewState.panY + dy;
+          
+          if (rafId.current) cancelAnimationFrame(rafId.current);
+          rafId.current = requestAnimationFrame(() => {
+            setViewState(prev => ({
+              ...prev,
+              panX: newPanX,
+              panY: newPanY
+            }));
+          });
+          
+          lastTouch.current = { x: touch.clientX, y: touch.clientY };
+        }
       }
     }
   };
 
   const onTouchEnd = (e: React.TouchEvent) => {
     if (e.touches.length === 0) {
-      setIsPinching(false);
-      setIsPanning(false);
+      // 所有手指离开
+      const wasPinching = isPinching;
+      const wasDragging = isDragging;
+      const startInfo = touchStart.current;
       
-      // 检测点击（用于批注）
-      if (touchStart.current && activeTool === 'note') {
-        const dt = Date.now() - touchStart.current.time;
-        const dx = Math.abs(e.changedTouches[0].clientX - touchStart.current.x);
-        const dy = Math.abs(e.changedTouches[0].clientY - touchStart.current.y);
+      setIsPinching(false);
+      setIsDragging(false);
+      
+      // 检测点击（用于批注或翻页）
+      if (startInfo && !wasPinching && !wasDragging) {
+        const dt = Date.now() - startInfo.time;
+        const target = e.changedTouches[0];
+        const dx = Math.abs(target.clientX - startInfo.x);
+        const dy = Math.abs(target.clientY - startInfo.y);
         
-        if (dt < 300 && dx < 10 && dy < 10 && tempNote) {
-          // 确认添加批注位置
-          setActiveTool('select');
+        // 轻触（小于300ms且移动小于10px）
+        if (dt < 300 && dx < 10 && dy < 10) {
+          if (activeTool === 'note' && tempNote) {
+            // 确认批注位置
+            setActiveTool('select');
+          } else if (!activeTool || activeTool === 'select') {
+            // 判断点击区域：左侧上一页，右侧下一页（可选功能）
+            const screenWidth = window.innerWidth;
+            if (target.clientX < screenWidth * 0.2 && pageNumber > 1) {
+              goToPrev();
+            } else if (target.clientX > screenWidth * 0.8 && pageNumber < numPages) {
+              goToNext();
+            }
+          }
+        }
+        
+        // 双击检测（300ms内的第二次点击）
+        if (dt < 300 && dx < 20 && dy < 20) {
+          const now = Date.now();
+          if ((window as any).lastClickTime && now - (window as any).lastClickTime < 300) {
+            // 双击缩放
+            if (viewState.scale > 1.2) {
+              setViewState({ scale: 1, panX: 0, panY: 0 });
+            } else {
+              setViewState({ scale: 2.5, panX: 0, panY: 0 });
+            }
+            (window as any).lastClickTime = 0;
+          } else {
+            (window as any).lastClickTime = now;
+          }
         }
       }
       
       touchStart.current = null;
+      lastTouch.current = null;
+      
+      // 应用边界限制（橡皮筋效果）
+      if (!wasPinching) {
+        const constrained = constrainPan(viewState.panX, viewState.panY, viewState.scale);
+        if (constrained.x !== viewState.panX || constrained.y !== viewState.panY) {
+          setViewState(prev => ({ ...prev, panX: constrained.x, panY: constrained.y }));
+        }
+      }
     } else if (e.touches.length === 1 && isPinching) {
-      // 从双指变为单指，切换为平移模式
+      // 从双指变为单指，切换为拖动
       setIsPinching(false);
-      setIsPanning(true);
+      const touch = e.touches[0];
       touchStart.current = {
-        x: e.touches[0].clientX,
-        y: e.touches[0].clientY,
+        x: touch.clientX,
+        y: touch.clientY,
         time: Date.now(),
-        touches: 1
-      };
-      lastTouch.current = {
-        x: e.touches[0].clientX,
-        y: e.touches[0].clientY,
         scale: viewState.scale,
         panX: viewState.panX,
         panY: viewState.panY
       };
+      lastTouch.current = { x: touch.clientX, y: touch.clientY };
     }
   };
 
@@ -372,8 +454,6 @@ export function PDFViewer({
     const pageElement = range.startContainer.parentElement?.closest('[data-page-number]') as HTMLElement | null;
     if (pageElement) {
       const pageNum = parseInt(pageElement.getAttribute('data-page-number') || String(pageNumber), 10);
-      
-      // 自动添加高亮
       const pageRect = pageElement.getBoundingClientRect();
       const relativeRects = rects.map(rect => ({
         left: ((rect.left - pageRect.left) / pageRect.width) * 100,
@@ -506,25 +586,25 @@ export function PDFViewer({
     <div 
       ref={containerRef}
       className={cn(
-        "flex h-full w-full overflow-hidden relative bg-background",
+        "flex h-full w-full overflow-hidden relative bg-background touch-none select-none",
         isFullscreen && "fixed inset-0 z-50 bg-black"
       )}
       onClick={resetControlsTimer}
     >
       {/* 顶部控制栏 */}
       <div className={cn(
-        "absolute top-0 left-0 right-0 z-40 bg-background/90 backdrop-blur-md border-b transition-transform duration-300",
+        "absolute top-0 left-0 right-0 z-40 bg-background/95 backdrop-blur-md border-b transition-transform duration-300 ease-out",
         (isFullscreen || showControls) ? "translate-y-0" : "-translate-y-full",
-        isFullscreen && "bg-black/80 border-white/10 text-white"
+        isFullscreen && "bg-black/90 border-white/10 text-white"
       )}>
         <div className="flex items-center justify-between h-14 px-4">
           <div className="flex items-center gap-2">
             {(onClose && !isFullscreen) && (
-              <Button variant="ghost" size="icon" className="h-8 w-8" onClick={onClose}>
+              <Button variant="ghost" size="icon" className="h-8 w-8 hover:bg-white/10" onClick={onClose}>
                 <ArrowLeft className="h-4 w-4" />
               </Button>
             )}
-            <Button variant="ghost" size="sm" className="h-8 gap-1" onClick={() => setViewMode('thumbnails')}>
+            <Button variant="ghost" size="sm" className="h-8 gap-1 hover:bg-white/10" onClick={() => setViewMode('thumbnails')}>
               <LayoutGrid className="h-4 w-4" />
               {!isMobile && "目录"}
             </Button>
@@ -532,13 +612,13 @@ export function PDFViewer({
 
           <div className="flex items-center gap-4">
             <div className="flex items-center gap-1 bg-muted/50 rounded-full px-3 py-1">
-              <Button variant="ghost" size="icon" className="h-7 w-7" onClick={goToPrev} disabled={pageNumber <= 1}>
+              <Button variant="ghost" size="icon" className="h-7 w-7 hover:bg-white/20" onClick={goToPrev} disabled={pageNumber <= 1}>
                 <ChevronLeft className="h-4 w-4" />
               </Button>
               <span className="text-sm font-medium tabular-nums min-w-[60px] text-center">
                 {pageNumber}/{numPages}
               </span>
-              <Button variant="ghost" size="icon" className="h-7 w-7" onClick={goToNext} disabled={pageNumber >= numPages}>
+              <Button variant="ghost" size="icon" className="h-7 w-7 hover:bg-white/20" onClick={goToNext} disabled={pageNumber >= numPages}>
                 <ChevronRight className="h-4 w-4" />
               </Button>
             </div>
@@ -546,16 +626,16 @@ export function PDFViewer({
 
           <div className="flex items-center gap-1">
             <div className="flex items-center gap-1 bg-muted/50 rounded-full px-2 py-1 mr-2">
-              <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => setViewState(prev => ({ ...prev, scale: Math.max(0.5, prev.scale - 0.2) }))}>
+              <Button variant="ghost" size="icon" className="h-7 w-7 hover:bg-white/20" onClick={() => setViewState(prev => ({ ...prev, scale: Math.max(0.5, prev.scale - 0.2) }))}>
                 <ZoomOut className="h-4 w-4" />
               </Button>
               <span className="text-xs w-10 text-center font-mono">{Math.round(viewState.scale * 100)}%</span>
-              <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => setViewState(prev => ({ ...prev, scale: Math.min(5, prev.scale + 0.2) }))}>
+              <Button variant="ghost" size="icon" className="h-7 w-7 hover:bg-white/20" onClick={() => setViewState(prev => ({ ...prev, scale: Math.min(5, prev.scale + 0.2) }))}>
                 <ZoomIn className="h-4 w-4" />
               </Button>
             </div>
             
-            <Button variant="ghost" size="icon" className="h-8 w-8" onClick={toggleFullscreen}>
+            <Button variant="ghost" size="icon" className="h-8 w-8 hover:bg-white/10" onClick={toggleFullscreen}>
               {isFullscreen ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}
             </Button>
           </div>
@@ -564,9 +644,9 @@ export function PDFViewer({
 
       {/* 工具栏 */}
       <div className={cn(
-        "absolute bottom-6 left-1/2 -translate-x-1/2 z-40 flex items-center gap-2 bg-background/90 backdrop-blur-md border rounded-full shadow-lg px-4 py-2 transition-all duration-300",
+        "absolute bottom-6 left-1/2 -translate-x-1/2 z-40 flex items-center gap-2 bg-background/95 backdrop-blur-md border rounded-full shadow-lg px-4 py-2 transition-all duration-300 ease-out",
         (showControls || activeTool !== 'select') ? "opacity-100 translate-y-0" : "opacity-0 translate-y-10 pointer-events-none",
-        isFullscreen && "bg-black/80 border-white/10 text-white bottom-10"
+        isFullscreen && "bg-black/90 border-white/10 text-white bottom-10"
       )}>
         <Button 
           variant={activeTool === 'move' ? 'default' : 'ghost'} 
@@ -581,9 +661,12 @@ export function PDFViewer({
         <Button 
           variant={activeTool === 'highlight' ? 'default' : 'ghost'} 
           size="icon" 
-          className="h-9 w-9 rounded-full"
+          className={cn(
+            "h-9 w-9 rounded-full relative",
+            activeTool === 'highlight' && "ring-2 ring-primary ring-offset-2"
+          )}
           onClick={() => setActiveTool(activeTool === 'highlight' ? 'select' : 'highlight')}
-          title="高亮"
+          title="高亮选中文本"
         >
           <Highlighter className="h-4 w-4" />
         </Button>
@@ -591,12 +674,14 @@ export function PDFViewer({
         <Button 
           variant={activeTool === 'note' ? 'default' : 'ghost'} 
           size="icon" 
-          className="h-9 w-9 rounded-full relative"
+          className={cn(
+            "h-9 w-9 rounded-full relative",
+            activeTool === 'note' && "ring-2 ring-primary ring-offset-2"
+          )}
           onClick={() => setActiveTool(activeTool === 'note' ? 'select' : 'note')}
           title="添加批注"
         >
           <MessageSquare className="h-4 w-4" />
-          {activeTool === 'note' && <span className="absolute -top-1 -right-1 w-2 h-2 bg-primary rounded-full" />}
         </Button>
 
         <div className="w-px h-4 bg-border mx-1" />
@@ -610,12 +695,22 @@ export function PDFViewer({
         </Button>
       </div>
 
+      {/* 高亮模式提示 */}
+      {activeTool === 'highlight' && (
+        <div className="absolute top-20 left-1/2 -translate-x-1/2 z-30 bg-primary text-primary-foreground px-4 py-2 rounded-full text-sm shadow-lg flex items-center gap-2 animate-in fade-in slide-in-from-top-2">
+          <span>选中文字即可高亮</span>
+          <button onClick={() => setActiveTool('select')} className="hover:opacity-80 p-1">
+            <X className="h-3 w-3" />
+          </button>
+        </div>
+      )}
+
       {/* 批注提示 */}
       {activeTool === 'note' && (
-        <div className="absolute top-20 left-1/2 -translate-x-1/2 z-30 bg-primary text-primary-foreground px-4 py-2 rounded-full text-sm shadow-lg flex items-center gap-2 animate-in fade-in">
+        <div className="absolute top-20 left-1/2 -translate-x-1/2 z-30 bg-amber-500 text-white px-4 py-2 rounded-full text-sm shadow-lg flex items-center gap-2 animate-in fade-in slide-in-from-top-2">
           <span>点击页面添加批注便签</span>
-          <button onClick={() => setActiveTool('select')} className="hover:opacity-80">
-            <X className="h-4 w-4" />
+          <button onClick={() => { setActiveTool('select'); setTempNote(null); }} className="hover:opacity-80 p-1">
+            <X className="h-3 w-3" />
           </button>
         </div>
       )}
@@ -624,23 +719,23 @@ export function PDFViewer({
       <div 
         ref={viewRef}
         className={cn(
-          "flex-1 overflow-hidden relative touch-none select-text bg-muted/20",
-          (isPanning || activeTool === 'move') && "cursor-grab active:cursor-grabbing",
+          "flex-1 overflow-hidden relative bg-muted/30 cursor-grab active:cursor-grabbing",
           activeTool === 'note' && "cursor-crosshair",
+          activeTool === 'highlight' && "cursor-text",
           isFullscreen && "bg-black"
         )}
         onTouchStart={onTouchStart}
         onTouchMove={onTouchMove}
         onTouchEnd={onTouchEnd}
-        onMouseUp={handleTextSelection}
+        onMouseUp={activeTool === 'highlight' ? handleTextSelection : undefined}
         onWheel={onWheel}
       >
         <div 
-          className="w-full h-full flex items-center justify-center"
+          className="w-full h-full flex items-center justify-center will-change-transform"
           style={{
-            transform: `translate(${viewState.panX}px, ${viewState.panY}px) scale(${viewState.scale})`,
+            transform: `translate3d(${viewState.panX}px, ${viewState.panY}px, 0) scale(${viewState.scale})`,
             transformOrigin: 'center center',
-            transition: isPinching || isPanning ? 'none' : 'transform 0.1s ease-out'
+            transition: isPinching || isDragging ? 'none' : 'transform 0.2s cubic-bezier(0.25, 0.46, 0.45, 0.94)'
           }}
         >
           <Document 
@@ -656,10 +751,14 @@ export function PDFViewer({
             <div
               ref={pageRef}
               className="relative shadow-2xl bg-white"
-              style={{ transform: `rotate(${rotation}deg)` }}
+              style={{ 
+                transform: `rotate(${rotation}deg)`,
+                transformOrigin: 'center center'
+              }}
               onClick={(e) => {
-                if (activeTool === 'note') {
+                if (activeTool === 'note' && !isDragging) {
                   const rect = e.currentTarget.getBoundingClientRect();
+                  // 计算相对于页面的点击位置（考虑缩放和平移）
                   const x = (e.clientX - rect.left) / rect.width;
                   const y = (e.clientY - rect.top) / rect.height;
                   setTempNote({ x, y, content: '' });
@@ -669,11 +768,12 @@ export function PDFViewer({
             >
               <Page
                 pageNumber={pageNumber}
-                scale={1.5} // 高分辨率渲染
+                scale={1.5}
                 rotate={rotation}
-                renderTextLayer={true}
+                renderTextLayer={activeTool === 'highlight'} // 只有高亮模式才显示文字层
                 renderAnnotationLayer={false}
                 className="shadow-2xl"
+                canvasBackground="white"
               />
               
               {/* 渲染现有批注 */}
@@ -684,7 +784,7 @@ export function PDFViewer({
                       {ann.rects.map((rect, i) => (
                         <div
                           key={i}
-                          className="absolute bg-yellow-300/50 pointer-events-auto cursor-pointer hover:bg-yellow-300/70 transition-colors"
+                          className="absolute bg-yellow-300/60 pointer-events-auto cursor-pointer hover:bg-yellow-400/70 transition-all border-b-2 border-yellow-500/50"
                           style={{
                             left: `${rect.left}%`,
                             top: `${rect.top}%`,
@@ -709,11 +809,11 @@ export function PDFViewer({
                       style={{ left: `${ann.x * 100}%`, top: `${ann.y * 100}%`, transform: 'translate(-50%, -50%)' }}
                     >
                       {isEditing ? (
-                        <div className="bg-white border-2 border-primary rounded-lg shadow-xl p-2 w-48 animate-in zoom-in-95">
+                        <div className="bg-white border-2 border-primary rounded-lg shadow-xl p-2 w-48 animate-in zoom-in-95" onClick={e => e.stopPropagation()}>
                           <Textarea
                             autoFocus
                             defaultValue={ann.content}
-                            className="min-h-[80px] text-sm resize-none"
+                            className="min-h-[80px] text-sm resize-none border-0 focus-visible:ring-1"
                             onBlur={(e) => {
                               onUpdateAnnotation(ann.id, e.target.value);
                               setEditingAnnotation(null);
@@ -740,7 +840,7 @@ export function PDFViewer({
                             setEditingAnnotation(ann.id);
                           }}
                         >
-                          <div className="w-8 h-8 bg-amber-400 rounded-full shadow-lg flex items-center justify-center cursor-pointer hover:scale-110 transition-transform border-2 border-white">
+                          <div className="w-8 h-8 bg-amber-400 rounded-full shadow-lg flex items-center justify-center cursor-pointer hover:scale-110 transition-transform border-2 border-white ring-2 ring-amber-400/30">
                             <MessageSquare className="h-4 w-4 text-amber-900" />
                           </div>
                           {ann.content && (
@@ -761,12 +861,13 @@ export function PDFViewer({
                 <div
                   className="absolute z-30"
                   style={{ left: `${tempNote.x * 100}%`, top: `${tempNote.y * 100}%`, transform: 'translate(-50%, -50%)' }}
+                  onClick={e => e.stopPropagation()}
                 >
-                  <div className="bg-white border-2 border-primary rounded-lg shadow-xl p-3 w-56 animate-in zoom-in-95">
+                  <div className="bg-white border-2 border-amber-400 rounded-lg shadow-xl p-3 w-56 animate-in zoom-in-95">
                     <Textarea
                       autoFocus
-                      placeholder="输入批注..."
-                      className="min-h-[100px] text-sm resize-none"
+                      placeholder="输入批注内容..."
+                      className="min-h-[100px] text-sm resize-none border-0 focus-visible:ring-1"
                       value={tempNote.content}
                       onChange={(e) => setTempNote({ ...tempNote, content: e.target.value })}
                       onKeyDown={(e) => {
@@ -786,7 +887,7 @@ export function PDFViewer({
                       }}>
                         取消
                       </Button>
-                      <Button size="sm" className="h-7" onClick={handleAddNote}>
+                      <Button size="sm" className="h-7 bg-amber-500 hover:bg-amber-600" onClick={handleAddNote}>
                         添加
                       </Button>
                     </div>
@@ -800,7 +901,7 @@ export function PDFViewer({
 
       {/* 缩略图侧边栏 */}
       {!isMobile && sidebarOpen && (
-        <div className="w-56 border-l bg-background/95 backdrop-blur-md flex flex-col shrink-0 h-full absolute right-0 top-0 z-30 shadow-xl">
+        <div className="w-56 border-l bg-background/95 backdrop-blur-md flex flex-col shrink-0 h-full absolute right-0 top-14 bottom-0 z-30 shadow-xl">
           <div className="flex items-center justify-between p-3 border-b">
             <span className="font-semibold text-sm">页面导航</span>
             <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => setSidebarOpen(false)}>
@@ -815,12 +916,12 @@ export function PDFViewer({
                     key={page}
                     onClick={() => goToPage(page)}
                     className={cn(
-                      "w-full relative aspect-[3/4] rounded-lg overflow-hidden transition-all border-2",
-                      pageNumber === page ? "border-primary opacity-100" : "border-transparent opacity-50 hover:opacity-80"
+                      "w-full relative aspect-[3/4] rounded-lg overflow-hidden transition-all border-2 hover:opacity-100",
+                      pageNumber === page ? "border-primary opacity-100 ring-1 ring-primary" : "border-transparent opacity-60"
                     )}
                   >
                     <Page pageNumber={page} scale={0.12} renderTextLayer={false} renderAnnotationLayer={false} />
-                    <div className="absolute bottom-0 inset-x-0 bg-black/60 text-white text-[10px] py-0.5 text-center">
+                    <div className="absolute bottom-0 inset-x-0 bg-black/60 text-white text-[10px] py-0.5 text-center font-medium">
                       {page}
                     </div>
                   </button>
@@ -833,48 +934,53 @@ export function PDFViewer({
 
       {/* 移动端底部栏 */}
       {isMobile && !isFullscreen && (
-        <div className="absolute bottom-0 left-0 right-0 h-16 bg-background/95 backdrop-blur-md border-t flex items-center justify-around z-30">
-          <button onClick={() => setViewMode('thumbnails')} className="flex flex-col items-center gap-1 text-muted-foreground">
+        <div className="absolute bottom-0 left-0 right-0 h-16 bg-background/95 backdrop-blur-lg border-t flex items-center justify-around z-30 pb-safe">
+          <button onClick={() => setViewMode('thumbnails')} className="flex flex-col items-center gap-1 text-muted-foreground active:scale-95 transition-transform">
             <LayoutGrid className="h-5 w-5" />
             <span className="text-[10px]">目录</span>
           </button>
           
-          <button onClick={goToPrev} disabled={pageNumber <= 1} className="p-2 disabled:opacity-30">
+          <button onClick={goToPrev} disabled={pageNumber <= 1} className="p-3 disabled:opacity-30 active:scale-95 transition-transform">
             <ChevronLeft className="h-6 w-6" />
           </button>
           
           <button 
             onClick={() => setSidebarOpen(true)} 
-            className="flex flex-col items-center px-4"
+            className="flex flex-col items-center px-4 active:scale-95 transition-transform"
           >
-            <span className="text-lg font-bold tabular-nums">{pageNumber}</span>
-            <span className="text-[10px] text-muted-foreground">/{numPages}</span>
+            <span className="text-lg font-bold tabular-nums leading-none">{pageNumber}</span>
+            <span className="text-[10px] text-muted-foreground leading-tight">/{numPages}</span>
           </button>
           
-          <button onClick={goToNext} disabled={pageNumber >= numPages} className="p-2 disabled:opacity-30">
+          <button onClick={goToNext} disabled={pageNumber >= numPages} className="p-3 disabled:opacity-30 active:scale-95 transition-transform">
             <ChevronRight className="h-6 w-6" />
           </button>
 
-          <button onClick={toggleFullscreen} className="flex flex-col items-center gap-1 text-muted-foreground">
+          <button onClick={toggleFullscreen} className="flex flex-col items-center gap-1 text-muted-foreground active:scale-95 transition-transform">
             <Maximize2 className="h-5 w-5" />
             <span className="text-[10px]">全屏</span>
           </button>
         </div>
       )}
 
-      {/* 对话框 */}
+      {/* 批注详情对话框 */}
       <Dialog open={!!selectedAnnotation} onOpenChange={() => setSelectedAnnotation(null)}>
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
-              <MessageSquare className="h-5 w-5" />
+              <MessageSquare className="h-5 w-5 text-amber-500" />
               批注详情
             </DialogTitle>
           </DialogHeader>
           <div className="mt-4">
             <p className="text-sm text-muted-foreground mb-2">第 {selectedAnnotation?.page} 页</p>
+            {selectedAnnotation?.quote && (
+              <div className="bg-yellow-50 border-l-4 border-yellow-400 p-3 mb-4 rounded-r-lg">
+                <p className="text-sm text-yellow-900 italic line-clamp-3">"{selectedAnnotation.quote}"</p>
+              </div>
+            )}
             <div className="bg-muted p-4 rounded-lg mb-4">
-              <p className="whitespace-pre-wrap text-sm">{selectedAnnotation?.content}</p>
+              <p className="whitespace-pre-wrap text-sm">{selectedAnnotation?.content || '无文本内容'}</p>
             </div>
             <div className="flex gap-2">
               <Button variant="outline" className="flex-1" onClick={() => {
@@ -893,6 +999,7 @@ export function PDFViewer({
         </DialogContent>
       </Dialog>
 
+      {/* 下载对话框 */}
       <Dialog open={isDownloadDialogOpen} onOpenChange={setIsDownloadDialogOpen}>
         <DialogContent>
           <DialogHeader>
