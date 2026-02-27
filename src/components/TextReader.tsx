@@ -3,9 +3,7 @@ import React, {
   useEffect,
   useRef,
   useMemo,
-  useCallback,
 } from 'react';
-import { useVirtualizer } from '@tanstack/react-virtual';
 
 // ============================== 🔧 类型定义 ==============================
 interface Chapter {
@@ -82,6 +80,10 @@ function cleanNovelContent(rawText: string): string {
   if (!rawText) return '';
 
   let text = rawText;
+
+  // 移除BOM和其他不可见字符
+  text = text.replace(/^\uFEFF/, ''); // 移除BOM
+  text = text.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F]/g, '');
 
   // 更精确的广告模式匹配，避免误删内容
   const adPatterns = [
@@ -187,33 +189,6 @@ function parseChapters(text: string): Chapter[] {
 }
 
 /**
- * 自动检测并解码文本编码（支持UTF-8、GBK、GB18030）
- */
-function detectAndDecode(buffer: ArrayBuffer): string {
-  const encodings = ['utf-8', 'gbk', 'gb18030'] as const;
-  const decoder = new TextDecoder();
-
-  // 尝试使用BOM检测UTF-8
-  const uint8Array = new Uint8Array(buffer);
-  if (uint8Array.length >= 3 && uint8Array[0] === 0xef && uint8Array[1] === 0xbb && uint8Array[2] === 0xbf) {
-    return decoder.decode(buffer);
-  }
-
-  // 尝试多种编码
-  for (const encoding of encodings) {
-    try {
-      const decoder = new TextDecoder(encoding, { fatal: true });
-      return decoder.decode(buffer);
-    } catch (e) {
-      continue;
-    }
-  }
-
-  // 最终降级方案
-  return decoder.decode(buffer);
-}
-
-/**
  * 加载本地设置
  */
 function loadSettings(): ReaderSettings {
@@ -287,29 +262,45 @@ function saveProgress(bookId: string, progress: Omit<Progress, 'timestamp'>) {
 
 // ============================== 📖 主组件 ==============================
 export function TextReader({ content: rawContent, title, bookId, onClose }: TextReaderProps) {
-  // ============================== 🔐 自动编码转换层 ==============================
-  const decodedContent = useMemo(() => {
+  // ============================== 🔐 内容处理 ==============================
+  const [contentError, setContentError] = useState<string | null>(null);
+  
+  const processedContent = useMemo(() => {
     try {
-      const encoder = new TextEncoder();
-      const buffer = encoder.encode(rawContent);
-      return detectAndDecode(buffer.buffer);
+      // 移除BOM和其他不可见字符
+      let processed = rawContent.replace(/^\uFEFF/, '');
+      processed = processed.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F]/g, '');
+      
+      // 清理内容
+      const cleaned = cleanNovelContent(processed);
+      
+      // 检查内容是否有效
+      if (!cleaned || cleaned.trim().length === 0) {
+        setContentError('文档内容为空或无法解析');
+        return '';
+      }
+      
+      setContentError(null);
+      return cleaned;
     } catch (e) {
-      console.warn('Encoding detection failed, using raw content', e);
-      return rawContent;
+      console.error('Content processing error:', e);
+      setContentError('文档处理失败');
+      return '';
     }
   }, [rawContent]);
 
-  const cleanedContent = useMemo(() => cleanNovelContent(decodedContent), [decodedContent]);
-  const isContentEmpty = !cleanedContent || cleanedContent.length === 0;
+  const isContentEmpty = !processedContent || processedContent.length === 0;
 
   if (isContentEmpty) {
     return (
-      <div className="fixed inset-0 z-50 flex items-center justify-center bg-background">
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-white">
         <div className="text-center p-6 max-w-md">
-          <p className="text-muted-foreground mb-4">文件内容为空或无法解析</p>
+          <p className="text-gray-600 mb-4">
+            {contentError || '文件内容为空或无法解析'}
+          </p>
           <button
             onClick={onClose}
-            className="px-4 py-2 bg-primary text-primary-foreground rounded-md hover:bg-primary/90 transition-colors"
+            className="px-4 py-2 bg-blue-500 text-white rounded-md hover:bg-blue-600 transition-colors"
           >
             返回
           </button>
@@ -332,14 +323,13 @@ export function TextReader({ content: rawContent, title, bookId, onClose }: Text
 
   const normalContainerRef = useRef<HTMLDivElement>(null);
   const immersiveContainerRef = useRef<HTMLDivElement>(null);
-  const parentRef = useRef<HTMLDivElement>(null); // 替代 listRef，作为虚拟滚动容器
   const autoReadRef = useRef<number | null>(null);
   const headerTimeoutRef = useRef<number | null>(null);
   const touchStartX = useRef(0);
   const touchStartY = useRef(0);
   const hasInitialized = useRef(false);
   const currentTheme = THEMES[settings.theme] || THEMES[0];
-  const chapters = useMemo(() => parseChapters(cleanedContent), [cleanedContent]);
+  const chapters = useMemo(() => parseChapters(processedContent), [processedContent]);
 
   const currentChapterData = chapters[currentChapter] || chapters[0];
   const totalLinesInChapter = currentChapterData?.lines.length || 0;
@@ -469,76 +459,6 @@ export function TextReader({ content: rawContent, title, bookId, onClose }: Text
     return () => window.removeEventListener('keydown', handleKey);
   }, [showSettings, showChapters, chapters.length, settings.pageMode, isImmersive]);
 
-  // ============================== 📐 虚拟滚动计算 ==============================
-  const getItemHeight = useCallback(
-    (index: number): number => {
-      // 基础高度计算
-      const baseHeight = Math.max(30, settings.fontSize * settings.lineHeight + settings.paragraphSpacing * 16);
-      
-      // 尝试获取对应行的文本长度来调整高度
-      let accumulated = 0;
-      for (let i = 0; i < chapters.length; i++) {
-        const chapter = chapters[i];
-        if (index < accumulated + chapter.lines.length) {
-          const lineIndex = index - accumulated;
-          const line = chapter.lines[lineIndex] || '';
-          // 根据行长度适当调整高度
-          if (line.length > 50) {
-            return baseHeight * 1.2;
-          }
-          return baseHeight;
-        }
-        accumulated += chapter.lines.length;
-      }
-      return baseHeight;
-    },
-    [settings.fontSize, settings.lineHeight, settings.paragraphSpacing, chapters]
-  );
-
-  const findChapterByLineIndex = useCallback(
-    (globalLineIndex: number): number => {
-      let accumulated = 0;
-      for (let i = 0; i < chapters.length; i++) {
-        accumulated += chapters[i].lines.length;
-        if (accumulated > globalLineIndex) return i;
-      }
-      return Math.max(0, chapters.length - 1);
-    },
-    [chapters]
-  );
-
-  // ✅ 重写 renderRow：只接收 index
-  const renderRow = useCallback(
-    (index: number) => {
-      const chapterIndex = findChapterByLineIndex(index);
-      const chapter = chapters[chapterIndex];
-      if (!chapter) return null;
-
-      const lineIndex = index - chapters.slice(0, chapterIndex).reduce((sum, c) => sum + c.lines.length, 0);
-      const line = chapter.lines[lineIndex] || '';
-
-      return (
-        <p
-          key={`${chapterIndex}-${lineIndex}`}
-          style={{
-            fontSize: `${settings.fontSize}px`,
-            fontFamily: settings.fontFamily,
-            lineHeight: settings.lineHeight,
-            letterSpacing: `${settings.letterSpacing}px`,
-            textAlign: settings.textAlign,
-            color: currentTheme.text,
-            marginBottom: `${settings.paragraphSpacing}em`,
-            padding: '0 1rem',
-          }}
-          className="break-words"
-        >
-          {line.trim() || '\u00A0'}
-        </p>
-      );
-    },
-    [chapters, settings, currentTheme, findChapterByLineIndex]
-  );
-
   // ============================== 🚪 导航控制 ==============================
   const goToNext = () => {
     if (settings.pageMode === 'page') {
@@ -623,59 +543,6 @@ export function TextReader({ content: rawContent, title, bookId, onClose }: Text
   };
 
   // ============================== 🖼️ 渲染逻辑 ==============================
-  const renderVirtualScroll = () => {
-    // 预计算所有行高（用于 estimateSize）
-    const itemSizes = useMemo(() => {
-      return Array.from({ length: totalLinesAll }, (_, i) => getItemHeight(i));
-    }, [totalLinesAll, getItemHeight]);
-
-    const virtualizer = useVirtualizer({
-      count: totalLinesAll,
-      getScrollElement: () => parentRef.current,
-      estimateSize: (index) => itemSizes[index] ?? 30,
-      overscan: 10, // 增加overscan以提高流畅度
-    });
-
-    return (
-      <div
-        ref={parentRef}
-        style={{
-          height: '100%',
-          overflowY: 'auto',
-          position: 'relative',
-          contain: 'strict',
-        }}
-      >
-        <div
-          style={{
-            height: `${virtualizer.getTotalSize()}px`,
-            width: '100%',
-            position: 'relative',
-          }}
-        >
-          {virtualizer.getVirtualItems().map((virtualItem) => (
-            <div
-              key={virtualItem.key}
-              data-index={virtualItem.index}
-              ref={(node) => virtualizer.measureElement(node)}
-              style={{
-                position: 'absolute',
-                top: 0,
-                left: 0,
-                width: '100%',
-                height: `${virtualItem.size}px`,
-                transform: `translateY(${virtualItem.start}px)`,
-                boxSizing: 'border-box',
-              }}
-            >
-              {renderRow(virtualItem.index)}
-            </div>
-          ))}
-        </div>
-      </div>
-    );
-  };
-
   const ChapterList = ({ onSelect }: { onSelect: (index: number) => void }) => (
     <div className="py-2">
       {chapters.map((chapter, index) => (
@@ -684,8 +551,8 @@ export function TextReader({ content: rawContent, title, bookId, onClose }: Text
           onClick={() => onSelect(index)}
           className={`w-full text-left px-5 py-3.5 transition-all duration-200 ${
             currentChapter === index
-              ? 'bg-primary/20 border-l-4 border-primary'
-              : 'hover:bg-black/5 border-l-4 border-transparent'
+              ? 'bg-blue-100 border-l-4 border-blue-500'
+              : 'hover:bg-gray-100 border-l-4 border-transparent'
           }`}
           style={{ borderBottom: `1px solid ${currentTheme.text}10` }}
         >
@@ -777,7 +644,26 @@ export function TextReader({ content: rawContent, title, bookId, onClose }: Text
               ))}
             </div>
           ) : (
-            renderVirtualScroll()
+            <div className="max-w-2xl mx-auto">
+              {currentChapterData?.lines.map((line, idx) => (
+                <p
+                  key={idx}
+                  style={{
+                    fontSize: `${settings.fontSize}px`,
+                    fontFamily: settings.fontFamily,
+                    lineHeight: settings.lineHeight,
+                    letterSpacing: `${settings.letterSpacing}px`,
+                    textAlign: settings.textAlign,
+                    color: currentTheme.text,
+                    marginBottom: `${settings.paragraphSpacing}em`,
+                    padding: '0 1rem',
+                  }}
+                  className="break-words"
+                >
+                  {line.trim() || '\u00A0'}
+                </p>
+              ))}
+            </div>
           )}
         </div>
 
@@ -905,7 +791,26 @@ export function TextReader({ content: rawContent, title, bookId, onClose }: Text
               ))}
             </div>
           ) : (
-            renderVirtualScroll()
+            <div className="max-w-2xl mx-auto">
+              {currentChapterData?.lines.map((line, idx) => (
+                <p
+                  key={idx}
+                  style={{
+                    fontSize: `${settings.fontSize}px`,
+                    fontFamily: settings.fontFamily,
+                    lineHeight: settings.lineHeight,
+                    letterSpacing: `${settings.letterSpacing}px`,
+                    textAlign: settings.textAlign,
+                    color: currentTheme.text,
+                    marginBottom: `${settings.paragraphSpacing}em`,
+                    padding: '0 1rem',
+                  }}
+                  className="break-words"
+                >
+                  {line.trim() || '\u00A0'}
+                </p>
+              ))}
+            </div>
           )}
         </div>
       </div>
@@ -989,7 +894,7 @@ export function TextReader({ content: rawContent, title, bookId, onClose }: Text
                   step="1"
                   value={settings.fontSize}
                   onChange={e => updateSetting('fontSize', Number(e.target.value))}
-                  className="w-full accent-primary"
+                  className="w-full accent-blue-500"
                 />
               </div>
               <div className="space-y-2">
@@ -1002,7 +907,7 @@ export function TextReader({ content: rawContent, title, bookId, onClose }: Text
                       key={f.name}
                       onClick={() => updateSetting('fontFamily', f.value)}
                       className={`text-xs h-9 rounded-md border transition-colors ${
-                        settings.fontFamily === f.value ? 'border-primary bg-primary/10' : 'border-gray-200 hover:border-gray-300'
+                        settings.fontFamily === f.value ? 'border-blue-500 bg-blue-100' : 'border-gray-200 hover:border-gray-300'
                       }`}
                       style={{ fontFamily: f.value }}
                     >
@@ -1021,7 +926,7 @@ export function TextReader({ content: rawContent, title, bookId, onClose }: Text
                       key={i}
                       onClick={() => updateSetting('theme', i)}
                       className={`aspect-square rounded-lg border-2 transition-all ${
-                        settings.theme === i ? 'border-primary' : 'border-transparent'
+                        settings.theme === i ? 'border-blue-500' : 'border-transparent'
                       }`}
                       style={{ backgroundColor: t.bg }}
                     >
@@ -1041,7 +946,7 @@ export function TextReader({ content: rawContent, title, bookId, onClose }: Text
                       onClick={() => updateSetting('pageMode', m.value as 'scroll' | 'page')}
                       className={`flex-1 gap-2 h-9 rounded-md border transition-colors ${
                         settings.pageMode === m.value
-                          ? 'border-primary bg-primary/10'
+                          ? 'border-blue-500 bg-blue-100'
                           : 'border-gray-200 hover:border-gray-300'
                       }`}
                     >
@@ -1061,7 +966,7 @@ export function TextReader({ content: rawContent, title, bookId, onClose }: Text
                       onClick={() => updateSetting('textAlign', a.value as 'left' | 'center' | 'justify')}
                       className={`flex-1 gap-2 h-9 rounded-md border transition-colors ${
                         settings.textAlign === a.value
-                          ? 'border-primary bg-primary/10'
+                          ? 'border-blue-500 bg-blue-100'
                           : 'border-gray-200 hover:border-gray-300'
                       }`}
                     >
@@ -1086,7 +991,7 @@ export function TextReader({ content: rawContent, title, bookId, onClose }: Text
                   step="0.1"
                   value={settings.lineHeight}
                   onChange={e => updateSetting('lineHeight', Number(e.target.value))}
-                  className="w-full accent-primary"
+                  className="w-full accent-blue-500"
                 />
               </div>
               <div className="space-y-2">
@@ -1105,7 +1010,7 @@ export function TextReader({ content: rawContent, title, bookId, onClose }: Text
                   step="0.1"
                   value={settings.letterSpacing}
                   onChange={e => updateSetting('letterSpacing', Number(e.target.value))}
-                  className="w-full accent-primary"
+                  className="w-full accent-blue-500"
                 />
               </div>
               <div className="space-y-2">
@@ -1124,7 +1029,7 @@ export function TextReader({ content: rawContent, title, bookId, onClose }: Text
                   step="0.1"
                   value={settings.paragraphSpacing}
                   onChange={e => updateSetting('paragraphSpacing', Number(e.target.value))}
-                  className="w-full accent-primary"
+                  className="w-full accent-blue-500"
                 />
               </div>
               <div className="flex items-center justify-between py-2">
@@ -1141,7 +1046,7 @@ export function TextReader({ content: rawContent, title, bookId, onClose }: Text
                   type="checkbox"
                   checked={settings.autoHideHeader}
                   onChange={e => updateSetting('autoHideHeader', e.target.checked)}
-                  className="accent-primary"
+                  className="accent-blue-500"
                 />
               </div>
               <div className="space-y-2">
@@ -1161,7 +1066,7 @@ export function TextReader({ content: rawContent, title, bookId, onClose }: Text
                   step="10"
                   value={autoReadSpeed}
                   onChange={e => setAutoReadSpeed(Number(e.target.value))}
-                  className="w-full accent-primary"
+                  className="w-full accent-blue-500"
                 />
                 <p className="text-xs opacity-50" style={{ color: currentTheme.text }}>
                   数值越小速度越快
