@@ -3,7 +3,6 @@ import { Document, Page, pdfjs } from 'react-pdf';
 import {
   ChevronLeft,
   ChevronRight,
-  Plus,
   X,
   MessageSquare,
   Download,
@@ -15,29 +14,23 @@ import {
   Minimize2,
   LayoutGrid,
   ArrowLeft,
-  MoreVertical,
   Highlighter,
   Pencil,
   Trash2,
-  PanelLeft,
-  PanelRight,
   Check,
   BookOpen,
-  StickyNote,
-  Type,
-  Undo2,
-  Info,
+  GripHorizontal,
+  Move,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Textarea } from '@/components/ui/textarea';
 import { Checkbox } from '@/components/ui/checkbox';
 import { ScrollArea } from '@/components/ui/scroll-area';
-import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from '@/components/ui/sheet';
 import { cn } from '@/lib/utils';
 import { toast } from 'sonner';
 
-pdfjs.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${pdfjs.version}/build/pdf.worker.min.mjs`;
+pdfjs.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@ ${pdfjs.version}/build/pdf.worker.min.mjs`;
 
 interface PDFAnnotation {
   id: string;
@@ -45,8 +38,8 @@ interface PDFAnnotation {
   type: 'note' | 'highlight';
   content: string;
   color: string;
-  x?: number;
-  y?: number;
+  x: number;
+  y: number;
   rects?: Array<{ left: number; top: number; width: number; height: number }>;
   quote?: string;
   createdAt: string;
@@ -71,15 +64,11 @@ interface PDFViewerProps {
   onClose?: () => void;
 }
 
-const formatDate = (dateString: string) => {
-  const date = new Date(dateString);
-  return date.toLocaleDateString('zh-CN', {
-    month: 'short',
-    day: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit'
-  });
-};
+interface ViewState {
+  scale: number;
+  panX: number;
+  panY: number;
+}
 
 export function PDFViewer({
   fileUrl,
@@ -93,58 +82,48 @@ export function PDFViewer({
 }: PDFViewerProps) {
   const [numPages, setNumPages] = useState(0);
   const [pageNumber, setPageNumber] = useState(1);
-  const [scale, setScale] = useState(1.0);
   const [rotation, setRotation] = useState(0);
-  const [loadError, setLoadError] = useState<string | null>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [isDownloadDialogOpen, setIsDownloadDialogOpen] = useState(false);
   const [includeAnnotations, setIncludeAnnotations] = useState(true);
   const [viewMode, setViewMode] = useState<'single' | 'scroll' | 'thumbnails'>('single');
   const [sidebarOpen, setSidebarOpen] = useState(false);
-  const [sidebarTab, setSidebarTab] = useState<'thumbnails' | 'annotations'>('thumbnails');
-  const [activeTool, setActiveTool] = useState<'select' | 'note' | 'highlight'>('select');
-  const [selectedAnnotation, setSelectedAnnotation] = useState<PDFAnnotation | null>(null);
-  const [editingAnnotation, setEditingAnnotation] = useState<PDFAnnotation | null>(null);
-  const [selection, setSelection] = useState<{
-    text: string;
-    rects: Array<{ left: number; top: number; width: number; height: number }>;
-    page: number;
-  } | null>(null);
-  const [pendingNote, setPendingNote] = useState<{
-    x: number;
-    y: number;
-    page: number;
-  } | null>(null);
-  const [isMobile, setIsMobile] = useState(false);
-  const [showFloatingTools, setShowFloatingTools] = useState(false);
-  const [showGestureHint, setShowGestureHint] = useState(true);
+  
+  // 视图状态：缩放和平移
+  const [viewState, setViewState] = useState<ViewState>({ scale: 1, panX: 0, panY: 0 });
   const [isPinching, setIsPinching] = useState(false);
-  const [showFullscreenControls, setShowFullscreenControls] = useState(true);
-  const [showFullscreenHint, setShowFullscreenHint] = useState(false);
+  const [isPanning, setIsPanning] = useState(false);
+  
+  // 批注状态
+  const [activeTool, setActiveTool] = useState<'select' | 'note' | 'highlight' | 'move'>('select');
+  const [selectedAnnotation, setSelectedAnnotation] = useState<PDFAnnotation | null>(null);
+  const [editingAnnotation, setEditingAnnotation] = useState<string | null>(null);
+  const [tempNote, setTempNote] = useState<{x: number; y: number; content: string} | null>(null);
+  
+  const [isMobile, setIsMobile] = useState(false);
+  const [showControls, setShowControls] = useState(true);
+  const [hasShownFullscreenHint, setHasShownFullscreenHint] = useState(false);
   
   const containerRef = useRef<HTMLDivElement>(null);
   const pageRef = useRef<HTMLDivElement>(null);
-  const scrollRef = useRef<HTMLDivElement>(null);
-  const touchStart = useRef<{ x: number; y: number; time: number; isTopEdge?: boolean } | null>(null);
-  const pinchStartScale = useRef<number>(1);
-  const touchStartDist = useRef<number>(0);
-  const lastPinchDistance = useRef<number>(0);
-  const lastTap = useRef<{ time: number; x: number; y: number } | null>(null);
-  const fullscreenTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const viewRef = useRef<HTMLDivElement>(null);
+  
+  // 触摸状态
+  const touchStart = useRef<{ x: number; y: number; time: number; touches: number } | null>(null);
+  const lastTouch = useRef<{ x: number; y: number; scale: number; panX: number; panY: number } | null>(null);
+  const initialPinchDistance = useRef<number>(0);
+  const pinchCenter = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
+  const controlsTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // 初始化检测
+  // 初始化
   useEffect(() => {
     const checkMobile = () => {
       const mobile = window.innerWidth < 768;
       setIsMobile(mobile);
+      setSidebarOpen(!mobile);
+      // 移动端初始缩放适配屏幕
       if (mobile) {
-        setSidebarOpen(false);
-        setScale(1.0);
-        const hasSeenHint = localStorage.getItem('pdf-gesture-hint-seen');
-        if (hasSeenHint) setShowGestureHint(false);
-      } else {
-        setScale(1.2);
-        setSidebarOpen(true);
+        setViewState({ scale: 0.85, panX: 0, panY: 0 });
       }
     };
     checkMobile();
@@ -156,46 +135,37 @@ export function PDFViewer({
     return () => window.removeEventListener('resize', checkMobile);
   }, [book.id]);
 
-  // 全屏控制栏自动隐藏
-  useEffect(() => {
-    if (isFullscreen) {
-      setShowFullscreenControls(true);
-      // 显示全屏提示
-      setShowFullscreenHint(true);
-      const hintTimer = setTimeout(() => setShowFullscreenHint(false), 4000);
-      
-      if (fullscreenTimer.current) clearTimeout(fullscreenTimer.current);
-      fullscreenTimer.current = setTimeout(() => {
-        setShowFullscreenControls(false);
-      }, 4000);
-      
-      return () => {
-        clearTimeout(hintTimer);
-        if (fullscreenTimer.current) clearTimeout(fullscreenTimer.current);
-      };
-    }
-  }, [isFullscreen, pageNumber, scale]);
-
-  // 监听全屏变化
-  useEffect(() => {
-    const handleFullscreenChange = () => {
-      setIsFullscreen(!!document.fullscreenElement);
-      if (!document.fullscreenElement) {
-        setShowFullscreenHint(false);
+  // 控制栏自动隐藏
+  const resetControlsTimer = useCallback(() => {
+    if (controlsTimer.current) clearTimeout(controlsTimer.current);
+    setShowControls(true);
+    controlsTimer.current = setTimeout(() => {
+      if (!isPinching && !isPanning && activeTool !== 'note') {
+        setShowControls(false);
       }
+    }, 3000);
+  }, [isPinching, isPanning, activeTool]);
+
+  // 监听全屏
+  useEffect(() => {
+    const handler = () => {
+      const fs = !!document.fullscreenElement;
+      setIsFullscreen(fs);
+      if (fs && !hasShownFullscreenHint) {
+        setHasShownFullscreenHint(true);
+        toast.success('全屏模式：双指缩放查看细节，拖拽移动', { duration: 3000 });
+      }
+      resetControlsTimer();
     };
-    document.addEventListener('fullscreenchange', handleFullscreenChange);
-    return () => document.removeEventListener('fullscreenchange', handleFullscreenChange);
-  }, []);
+    document.addEventListener('fullscreenchange', handler);
+    return () => document.removeEventListener('fullscreenchange', handler);
+  }, [hasShownFullscreenHint, resetControlsTimer]);
 
   const onDocumentLoadSuccess = useCallback(({ numPages }: { numPages: number }) => {
     setNumPages(numPages);
-    setLoadError(null);
   }, []);
 
-  const onDocumentLoadError = useCallback((error: Error) => {
-    console.error('PDF load error:', error);
-    setLoadError('无法加载 PDF 文件');
+  const onDocumentLoadError = useCallback(() => {
     toast.error('PDF 加载失败');
   }, []);
 
@@ -203,25 +173,14 @@ export function PDFViewer({
     const target = Math.max(1, Math.min(page, numPages));
     setPageNumber(target);
     localStorage.setItem(`pdf-progress-${book.id}`, String(target));
-    setSelection(null);
-    window.getSelection()?.removeAllRanges();
-    if (scrollRef.current) {
-      scrollRef.current.scrollTop = 0;
-      scrollRef.current.scrollLeft = 0;
-    }
+    // 翻页时重置视图但保持缩放级别
+    setViewState(prev => ({ ...prev, panX: 0, panY: 0 }));
   }, [numPages, book.id]);
 
   const goToPrev = () => goToPage(pageNumber - 1);
   const goToNext = () => goToPage(pageNumber + 1);
 
-  const handleZoom = useCallback((delta: number) => {
-    setScale(s => {
-      const newScale = Math.max(0.5, Math.min(4, s + delta));
-      return Math.round(newScale * 10) / 10;
-    });
-  }, []);
-
-  const resetZoom = () => setScale(isMobile ? 1.0 : 1.2);
+  const resetView = () => setViewState({ scale: isMobile ? 0.85 : 1, panX: 0, panY: 0 });
 
   const toggleFullscreen = useCallback(async () => {
     try {
@@ -230,20 +189,175 @@ export function PDFViewer({
       } else {
         await document.exitFullscreen();
       }
-    } catch (err) {
+    } catch {
       toast.error('无法切换全屏模式');
     }
   }, []);
 
-  // 处理文本选择
-  const handleTextSelection = useCallback(() => {
-    if (activeTool !== 'highlight' && activeTool !== 'select') return;
-    const sel = window.getSelection();
-    if (!sel || sel.isCollapsed) {
-      setSelection(null);
-      setShowFloatingTools(false);
-      return;
+  // 触摸处理 - 图片式浏览
+  const onTouchStart = (e: React.TouchEvent) => {
+    resetControlsTimer();
+    
+    if (e.touches.length === 2) {
+      // 双指缩放开始
+      setIsPinching(true);
+      const dx = e.touches[0].pageX - e.touches[1].pageX;
+      const dy = e.touches[0].pageY - e.touches[1].pageY;
+      initialPinchDistance.current = Math.hypot(dx, dy);
+      
+      // 计算双指中心点（相对于视口）
+      const centerX = (e.touches[0].pageX + e.touches[1].pageX) / 2;
+      const centerY = (e.touches[0].pageY + e.touches[1].pageY) / 2;
+      pinchCenter.current = { x: centerX, y: centerY };
+      
+      lastTouch.current = { 
+        x: centerX, 
+        y: centerY, 
+        scale: viewState.scale,
+        panX: viewState.panX,
+        panY: viewState.panY
+      };
+    } else if (e.touches.length === 1) {
+      // 单指：可能是平移或批注
+      touchStart.current = {
+        x: e.touches[0].clientX,
+        y: e.touches[0].clientY,
+        time: Date.now(),
+        touches: 1
+      };
+      lastTouch.current = {
+        x: e.touches[0].clientX,
+        y: e.touches[0].clientY,
+        scale: viewState.scale,
+        panX: viewState.panX,
+        panY: viewState.panY
+      };
+      
+      // 如果是批注模式，记录位置
+      if (activeTool === 'note' && pageRef.current) {
+        const rect = pageRef.current.getBoundingClientRect();
+        const x = (e.touches[0].clientX - rect.left) / rect.width;
+        const y = (e.touches[0].clientY - rect.top) / rect.height;
+        if (x >= 0 && x <= 1 && y >= 0 && y <= 1) {
+          setTempNote({ x, y, content: '' });
+        }
+      }
     }
+  };
+
+  const onTouchMove = (e: React.TouchEvent) => {
+    e.preventDefault(); // 防止页面滚动
+    
+    if (e.touches.length === 2 && isPinching) {
+      // 双指缩放：以双指中心为焦点缩放
+      const dx = e.touches[0].pageX - e.touches[1].pageX;
+      const dy = e.touches[0].pageY - e.touches[1].pageY;
+      const distance = Math.hypot(dx, dy);
+      const scaleFactor = distance / initialPinchDistance.current;
+      
+      // 计算新的缩放级别
+      const newScale = Math.max(0.5, Math.min(5, lastTouch.current!.scale * scaleFactor));
+      
+      // 计算焦点偏移以保持中心点稳定
+      const centerX = (e.touches[0].pageX + e.touches[1].pageX) / 2;
+      const centerY = (e.touches[0].pageY + e.touches[1].pageY) / 2;
+      
+      // 简化的以焦点为中心的缩放公式
+      const scaleRatio = newScale / viewState.scale;
+      const newPanX = centerX - (centerX - viewState.panX) * scaleRatio;
+      const newPanY = centerY - (centerY - viewState.panY) * scaleRatio;
+      
+      setViewState({
+        scale: newScale,
+        panX: newPanX,
+        panY: newPanY
+      });
+    } else if (e.touches.length === 1 && lastTouch.current && !activeTool) {
+      // 单指拖拽平移（仅当不在批注模式下）
+      if (viewState.scale > 1 || isFullscreen) {
+        setIsPanning(true);
+        const dx = e.touches[0].clientX - lastTouch.current.x;
+        const dy = e.touches[0].clientY - lastTouch.current.y;
+        
+        setViewState(prev => ({
+          ...prev,
+          panX: lastTouch.current!.panX + dx,
+          panY: lastTouch.current!.panY + dy
+        }));
+      }
+    }
+  };
+
+  const onTouchEnd = (e: React.TouchEvent) => {
+    if (e.touches.length === 0) {
+      setIsPinching(false);
+      setIsPanning(false);
+      
+      // 检测点击（用于批注）
+      if (touchStart.current && activeTool === 'note') {
+        const dt = Date.now() - touchStart.current.time;
+        const dx = Math.abs(e.changedTouches[0].clientX - touchStart.current.x);
+        const dy = Math.abs(e.changedTouches[0].clientY - touchStart.current.y);
+        
+        if (dt < 300 && dx < 10 && dy < 10 && tempNote) {
+          // 确认添加批注位置
+          setActiveTool('select');
+        }
+      }
+      
+      touchStart.current = null;
+    } else if (e.touches.length === 1 && isPinching) {
+      // 从双指变为单指，切换为平移模式
+      setIsPinching(false);
+      setIsPanning(true);
+      touchStart.current = {
+        x: e.touches[0].clientX,
+        y: e.touches[0].clientY,
+        time: Date.now(),
+        touches: 1
+      };
+      lastTouch.current = {
+        x: e.touches[0].clientX,
+        y: e.touches[0].clientY,
+        scale: viewState.scale,
+        panX: viewState.panX,
+        panY: viewState.panY
+      };
+    }
+  };
+
+  // 鼠标滚轮缩放（桌面端）
+  const onWheel = (e: React.WheelEvent) => {
+    if (e.ctrlKey || e.metaKey) {
+      e.preventDefault();
+      const delta = e.deltaY > 0 ? -0.1 : 0.1;
+      const newScale = Math.max(0.5, Math.min(5, viewState.scale + delta));
+      setViewState(prev => ({ ...prev, scale: newScale }));
+    }
+  };
+
+  // 批注处理
+  const handleAddNote = () => {
+    if (tempNote && tempNote.content.trim()) {
+      onAddAnnotation({
+        bookId: book.id,
+        page: pageNumber,
+        x: tempNote.x,
+        y: tempNote.y,
+        content: tempNote.content.trim(),
+        color: '#fbbf24',
+        type: 'note',
+      });
+      setTempNote(null);
+      toast.success('批注已添加');
+    }
+  };
+
+  const handleTextSelection = useCallback(() => {
+    if (activeTool !== 'highlight') return;
+    const sel = window.getSelection();
+    if (!sel || sel.isCollapsed) return;
+    
     const text = sel.toString().trim();
     if (!text || text.length < 2) return;
     
@@ -258,181 +372,43 @@ export function PDFViewer({
     const pageElement = range.startContainer.parentElement?.closest('[data-page-number]') as HTMLElement | null;
     if (pageElement) {
       const pageNum = parseInt(pageElement.getAttribute('data-page-number') || String(pageNumber), 10);
-      setSelection({ text, rects, page: pageNum });
-      setShowFloatingTools(true);
+      
+      // 自动添加高亮
+      const pageRect = pageElement.getBoundingClientRect();
+      const relativeRects = rects.map(rect => ({
+        left: ((rect.left - pageRect.left) / pageRect.width) * 100,
+        top: ((rect.top - pageRect.top) / pageRect.height) * 100,
+        width: (rect.width / pageRect.width) * 100,
+        height: (rect.height / pageRect.height) * 100,
+      }));
+      
+      onAddAnnotation({
+        bookId: book.id,
+        page: pageNum,
+        type: 'highlight',
+        content: '',
+        color: '#fef08a',
+        rects: relativeRects,
+        quote: text,
+        x: 0, y: 0
+      });
+      
+      window.getSelection()?.removeAllRanges();
+      setActiveTool('select');
+      toast.success('已高亮');
     }
-  }, [activeTool, pageNumber]);
-
-  const addHighlight = useCallback((content: string = '') => {
-    if (!selection) return;
-    const pageElement = document.querySelector(`[data-page-number="${selection.page}"]`);
-    if (!pageElement) return;
-    
-    const pageRect = pageElement.getBoundingClientRect();
-    const relativeRects = selection.rects.map(rect => ({
-      left: ((rect.left - pageRect.left) / pageRect.width) * 100,
-      top: ((rect.top - pageRect.top) / pageRect.height) * 100,
-      width: (rect.width / pageRect.width) * 100,
-      height: (rect.height / pageRect.height) * 100,
-    }));
-    
-    onAddAnnotation({
-      bookId: book.id,
-      page: selection.page,
-      type: 'highlight',
-      content,
-      color: '#fef08a',
-      rects: relativeRects,
-      quote: selection.text,
-    });
-    
-    setSelection(null);
-    setShowFloatingTools(false);
-    setActiveTool('select');
-    window.getSelection()?.removeAllRanges();
-    toast.success('高亮已添加');
-  }, [selection, book.id, onAddAnnotation]);
-
-  const handlePageClick = useCallback((e: React.MouseEvent, pageNum: number) => {
-    if (activeTool !== 'note' || !pageRef.current) return;
-    const rect = pageRef.current.getBoundingClientRect();
-    const x = (e.clientX - rect.left) / rect.width;
-    const y = (e.clientY - rect.top) / rect.height;
-    setPendingNote({ x, y, page: pageNum });
-  }, [activeTool]);
-
-  const confirmAddNote = useCallback((content: string) => {
-    if (!pendingNote || !content.trim()) return;
-    onAddAnnotation({
-      bookId: book.id,
-      page: pendingNote.page,
-      x: pendingNote.x,
-      y: pendingNote.y,
-      content: content.trim(),
-      color: '#fbbf24',
-      type: 'note',
-    });
-    setPendingNote(null);
-    setActiveTool('select');
-    toast.success('批注已添加');
-  }, [pendingNote, book.id, onAddAnnotation]);
+  }, [activeTool, pageNumber, book.id, onAddAnnotation]);
 
   const handleDelete = useCallback((id: string) => {
     onDeleteAnnotation(id);
     setSelectedAnnotation(null);
-    setEditingAnnotation(null);
-    toast.success('批注已删除');
+    toast.success('已删除');
   }, [onDeleteAnnotation]);
-
-  // 优化的触摸处理 - 全屏模式下优化
-  const onTouchStart = (e: React.TouchEvent) => {
-    // 全屏时触摸显示控制栏
-    if (isFullscreen) {
-      setShowFullscreenControls(true);
-      if (fullscreenTimer.current) clearTimeout(fullscreenTimer.current);
-      fullscreenTimer.current = setTimeout(() => setShowFullscreenControls(false), 4000);
-    }
-
-    if (e.touches.length === 2) {
-      setIsPinching(true);
-      const dist = Math.hypot(
-        e.touches[0].pageX - e.touches[1].pageX,
-        e.touches[0].pageY - e.touches[1].pageY
-      );
-      touchStartDist.current = dist;
-      lastPinchDistance.current = dist;
-      pinchStartScale.current = scale;
-    } else if (e.touches.length === 1) {
-      // 记录是否从顶部边缘开始（用于退出全屏判定）
-      const isTopEdge = e.touches[0].clientY < 50;
-      touchStart.current = { 
-        x: e.touches[0].clientX, 
-        y: e.touches[0].clientY,
-        time: Date.now(),
-        isTopEdge
-      };
-    }
-  };
-
-  const onTouchMove = (e: React.TouchEvent) => {
-    if (e.touches.length === 2 && isPinching) {
-      e.preventDefault();
-      const dist = Math.hypot(
-        e.touches[0].pageX - e.touches[1].pageX,
-        e.touches[0].pageY - e.touches[1].pageY
-      );
-      // 更平滑的缩放
-      const scaleFactor = dist / touchStartDist.current;
-      const newScale = Math.max(0.5, Math.min(4, pinchStartScale.current * scaleFactor));
-      setScale(Math.round(newScale * 10) / 10);
-    }
-  };
-
-  const onTouchEnd = (e: React.TouchEvent) => {
-    if (e.touches.length === 1 && isPinching) {
-      // 从双指变为单指，继续 pinch 状态但准备结束
-      return;
-    }
-    
-    if (e.touches.length === 0 && isPinching) {
-      setIsPinching(false);
-      return;
-    }
-    
-    if (!touchStart.current || isPinching) {
-      touchStart.current = null;
-      return;
-    }
-    
-    const touch = e.changedTouches[0];
-    const dx = touchStart.current.x - touch.clientX;
-    const dy = touchStart.current.y - touch.clientY;
-    const dt = Date.now() - touchStart.current.time;
-    const now = Date.now();
-    
-    // 双击缩放（全屏和非全屏都支持）
-    if (lastTap.current && 
-        now - lastTap.current.time < 300 && 
-        Math.abs(touch.clientX - lastTap.current.x) < 10 &&
-        Math.abs(touch.clientY - lastTap.current.y) < 10) {
-      if (scale > 1.5) {
-        resetZoom();
-        toast.success('重置缩放');
-      } else {
-        setScale(2.5);
-        toast.success('放大至 250%');
-      }
-      lastTap.current = null;
-      touchStart.current = null;
-      return;
-    }
-    
-    lastTap.current = { time: now, x: touch.clientX, y: touch.clientY };
-    
-    // 全屏退出判定：必须从顶部边缘(50px内)开始，且向下滑动超过150px，速度要快
-    if (isFullscreen && 
-        touchStart.current.isTopEdge && 
-        dy < -150 && 
-        Math.abs(dy) > Math.abs(dx) && 
-        dt < 400) {
-      toggleFullscreen();
-      toast.success('退出全屏');
-      return;
-    }
-    
-    // 滑动翻页（非缩放状态下）
-    if (!isPinching && Math.abs(dx) > Math.abs(dy) && Math.abs(dx) > 80 && dt < 300) {
-      if (dx > 0) goToNext();
-      else goToPrev();
-    }
-    
-    touchStart.current = null;
-  };
 
   // 键盘事件
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.target instanceof HTMLTextAreaElement || e.target instanceof HTMLInputElement) {
+      if (e.target instanceof HTMLTextAreaElement) {
         if (e.key === 'Escape') (e.target as HTMLElement).blur();
         return;
       }
@@ -447,26 +423,18 @@ export function PDFViewer({
           e.preventDefault();
           goToPrev();
           break;
-        case 'Home':
-          e.preventDefault();
-          goToPage(1);
-          break;
-        case 'End':
-          e.preventDefault();
-          goToPage(numPages);
-          break;
         case '+':
         case '=':
           e.preventDefault();
-          handleZoom(0.2);
+          setViewState(prev => ({ ...prev, scale: Math.min(5, prev.scale + 0.2) }));
           break;
         case '-':
           e.preventDefault();
-          handleZoom(-0.2);
+          setViewState(prev => ({ ...prev, scale: Math.max(0.5, prev.scale - 0.2) }));
           break;
         case '0':
           e.preventDefault();
-          resetZoom();
+          resetView();
           break;
         case 'Escape':
           if (document.fullscreenElement) {
@@ -480,41 +448,16 @@ export function PDFViewer({
     
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [goToNext, goToPrev, goToPage, numPages, onClose, handleZoom]);
+  }, [goToNext, goToPrev, onClose]);
 
   const currentAnnotations = useMemo(() => 
     annotations.filter(a => a.page === pageNumber),
   [annotations, pageNumber]);
 
-  const renderHighlights = (pageNum: number) => {
-    return annotations
-      .filter(ann => ann.page === pageNum && ann.type === 'highlight' && ann.rects)
-      .map(ann => (
-        <div key={ann.id} className="absolute inset-0 pointer-events-none">
-          {ann.rects!.map((rect, i) => (
-            <div
-              key={i}
-              className="absolute bg-yellow-300/40 hover:bg-yellow-300/60 cursor-pointer pointer-events-auto transition-colors"
-              style={{
-                left: `${rect.left}%`,
-                top: `${rect.top}%`,
-                width: `${rect.width}%`,
-                height: `${rect.height}%`,
-              }}
-              onClick={(e: React.MouseEvent) => {
-                e.stopPropagation();
-                setSelectedAnnotation(ann);
-              }}
-            />
-          ))}
-        </div>
-      ));
-  };
-
   if (viewMode === 'thumbnails') {
     return (
       <div className="flex flex-col h-full bg-background">
-        <div className="flex items-center justify-between p-3 border-b bg-background/80 backdrop-blur-md sticky top-0 z-20 h-14">
+        <div className="flex items-center justify-between p-3 border-b h-14 shrink-0">
           <div className="flex items-center gap-2">
             {onClose && (
               <Button variant="ghost" size="icon" className="h-9 w-9" onClick={onClose}>
@@ -566,616 +509,386 @@ export function PDFViewer({
         "flex h-full w-full overflow-hidden relative bg-background",
         isFullscreen && "fixed inset-0 z-50 bg-black"
       )}
+      onClick={resetControlsTimer}
     >
-      {/* 桌面端侧边栏 */}
-      {!isMobile && !isFullscreen && sidebarOpen && (
-        <div className="w-64 border-r bg-muted/30 flex flex-col shrink-0 h-full">
-          <div className="flex items-center justify-between p-3 border-b h-14">
-            <span className="font-semibold text-sm truncate pr-2">{book.title}</span>
-            <Button variant="ghost" size="icon" className="h-8 w-8 shrink-0" onClick={() => setSidebarOpen(false)}>
-              <PanelLeft className="h-4 w-4" />
+      {/* 顶部控制栏 */}
+      <div className={cn(
+        "absolute top-0 left-0 right-0 z-40 bg-background/90 backdrop-blur-md border-b transition-transform duration-300",
+        (isFullscreen || showControls) ? "translate-y-0" : "-translate-y-full",
+        isFullscreen && "bg-black/80 border-white/10 text-white"
+      )}>
+        <div className="flex items-center justify-between h-14 px-4">
+          <div className="flex items-center gap-2">
+            {(onClose && !isFullscreen) && (
+              <Button variant="ghost" size="icon" className="h-8 w-8" onClick={onClose}>
+                <ArrowLeft className="h-4 w-4" />
+              </Button>
+            )}
+            <Button variant="ghost" size="sm" className="h-8 gap-1" onClick={() => setViewMode('thumbnails')}>
+              <LayoutGrid className="h-4 w-4" />
+              {!isMobile && "目录"}
             </Button>
           </div>
-          <div className="flex border-b">
-            <button
-              onClick={() => setSidebarTab('thumbnails')}
-              className={cn(
-                "flex-1 py-2 text-xs font-medium transition-colors",
-                sidebarTab === 'thumbnails' ? "bg-accent text-accent-foreground" : "hover:bg-accent/50"
-              )}
+
+          <div className="flex items-center gap-4">
+            <div className="flex items-center gap-1 bg-muted/50 rounded-full px-3 py-1">
+              <Button variant="ghost" size="icon" className="h-7 w-7" onClick={goToPrev} disabled={pageNumber <= 1}>
+                <ChevronLeft className="h-4 w-4" />
+              </Button>
+              <span className="text-sm font-medium tabular-nums min-w-[60px] text-center">
+                {pageNumber}/{numPages}
+              </span>
+              <Button variant="ghost" size="icon" className="h-7 w-7" onClick={goToNext} disabled={pageNumber >= numPages}>
+                <ChevronRight className="h-4 w-4" />
+              </Button>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-1">
+            <div className="flex items-center gap-1 bg-muted/50 rounded-full px-2 py-1 mr-2">
+              <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => setViewState(prev => ({ ...prev, scale: Math.max(0.5, prev.scale - 0.2) }))}>
+                <ZoomOut className="h-4 w-4" />
+              </Button>
+              <span className="text-xs w-10 text-center font-mono">{Math.round(viewState.scale * 100)}%</span>
+              <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => setViewState(prev => ({ ...prev, scale: Math.min(5, prev.scale + 0.2) }))}>
+                <ZoomIn className="h-4 w-4" />
+              </Button>
+            </div>
+            
+            <Button variant="ghost" size="icon" className="h-8 w-8" onClick={toggleFullscreen}>
+              {isFullscreen ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}
+            </Button>
+          </div>
+        </div>
+      </div>
+
+      {/* 工具栏 */}
+      <div className={cn(
+        "absolute bottom-6 left-1/2 -translate-x-1/2 z-40 flex items-center gap-2 bg-background/90 backdrop-blur-md border rounded-full shadow-lg px-4 py-2 transition-all duration-300",
+        (showControls || activeTool !== 'select') ? "opacity-100 translate-y-0" : "opacity-0 translate-y-10 pointer-events-none",
+        isFullscreen && "bg-black/80 border-white/10 text-white bottom-10"
+      )}>
+        <Button 
+          variant={activeTool === 'move' ? 'default' : 'ghost'} 
+          size="icon" 
+          className="h-9 w-9 rounded-full"
+          onClick={() => setActiveTool(activeTool === 'move' ? 'select' : 'move')}
+          title="移动/浏览"
+        >
+          <Move className="h-4 w-4" />
+        </Button>
+        
+        <Button 
+          variant={activeTool === 'highlight' ? 'default' : 'ghost'} 
+          size="icon" 
+          className="h-9 w-9 rounded-full"
+          onClick={() => setActiveTool(activeTool === 'highlight' ? 'select' : 'highlight')}
+          title="高亮"
+        >
+          <Highlighter className="h-4 w-4" />
+        </Button>
+
+        <Button 
+          variant={activeTool === 'note' ? 'default' : 'ghost'} 
+          size="icon" 
+          className="h-9 w-9 rounded-full relative"
+          onClick={() => setActiveTool(activeTool === 'note' ? 'select' : 'note')}
+          title="添加批注"
+        >
+          <MessageSquare className="h-4 w-4" />
+          {activeTool === 'note' && <span className="absolute -top-1 -right-1 w-2 h-2 bg-primary rounded-full" />}
+        </Button>
+
+        <div className="w-px h-4 bg-border mx-1" />
+        
+        <Button variant="ghost" size="icon" className="h-9 w-9 rounded-full" onClick={resetView} title="重置视图">
+          <GripHorizontal className="h-4 w-4" />
+        </Button>
+
+        <Button variant="ghost" size="icon" className="h-9 w-9 rounded-full" onClick={() => setRotation(r => (r + 90) % 360)}>
+          <RotateCw className="h-4 w-4" />
+        </Button>
+      </div>
+
+      {/* 批注提示 */}
+      {activeTool === 'note' && (
+        <div className="absolute top-20 left-1/2 -translate-x-1/2 z-30 bg-primary text-primary-foreground px-4 py-2 rounded-full text-sm shadow-lg flex items-center gap-2 animate-in fade-in">
+          <span>点击页面添加批注便签</span>
+          <button onClick={() => setActiveTool('select')} className="hover:opacity-80">
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+      )}
+
+      {/* PDF 内容区域 - 支持自由缩放平移 */}
+      <div 
+        ref={viewRef}
+        className={cn(
+          "flex-1 overflow-hidden relative touch-none select-text bg-muted/20",
+          (isPanning || activeTool === 'move') && "cursor-grab active:cursor-grabbing",
+          activeTool === 'note' && "cursor-crosshair",
+          isFullscreen && "bg-black"
+        )}
+        onTouchStart={onTouchStart}
+        onTouchMove={onTouchMove}
+        onTouchEnd={onTouchEnd}
+        onMouseUp={handleTextSelection}
+        onWheel={onWheel}
+      >
+        <div 
+          className="w-full h-full flex items-center justify-center"
+          style={{
+            transform: `translate(${viewState.panX}px, ${viewState.panY}px) scale(${viewState.scale})`,
+            transformOrigin: 'center center',
+            transition: isPinching || isPanning ? 'none' : 'transform 0.1s ease-out'
+          }}
+        >
+          <Document 
+            file={fileUrl} 
+            onLoadSuccess={onDocumentLoadSuccess}
+            onLoadError={onDocumentLoadError}
+            loading={
+              <div className="flex items-center justify-center h-[50vh]">
+                <div className="w-10 h-10 border-4 border-primary border-t-transparent rounded-full animate-spin" />
+              </div>
+            }
+          >
+            <div
+              ref={pageRef}
+              className="relative shadow-2xl bg-white"
+              style={{ transform: `rotate(${rotation}deg)` }}
+              onClick={(e) => {
+                if (activeTool === 'note') {
+                  const rect = e.currentTarget.getBoundingClientRect();
+                  const x = (e.clientX - rect.left) / rect.width;
+                  const y = (e.clientY - rect.top) / rect.height;
+                  setTempNote({ x, y, content: '' });
+                }
+              }}
+              data-page-number={pageNumber}
             >
-              缩略图
-            </button>
-            <button
-              onClick={() => setSidebarTab('annotations')}
-              className={cn(
-                "flex-1 py-2 text-xs font-medium transition-colors",
-                sidebarTab === 'annotations' ? "bg-accent text-accent-foreground" : "hover:bg-accent/50"
+              <Page
+                pageNumber={pageNumber}
+                scale={1.5} // 高分辨率渲染
+                rotate={rotation}
+                renderTextLayer={true}
+                renderAnnotationLayer={false}
+                className="shadow-2xl"
+              />
+              
+              {/* 渲染现有批注 */}
+              {currentAnnotations.map(ann => {
+                if (ann.type === 'highlight' && ann.rects) {
+                  return (
+                    <div key={ann.id} className="absolute inset-0 pointer-events-none">
+                      {ann.rects.map((rect, i) => (
+                        <div
+                          key={i}
+                          className="absolute bg-yellow-300/50 pointer-events-auto cursor-pointer hover:bg-yellow-300/70 transition-colors"
+                          style={{
+                            left: `${rect.left}%`,
+                            top: `${rect.top}%`,
+                            width: `${rect.width}%`,
+                            height: `${rect.height}%`,
+                          }}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setSelectedAnnotation(ann);
+                          }}
+                        />
+                      ))}
+                    </div>
+                  );
+                }
+                if (ann.type === 'note') {
+                  const isEditing = editingAnnotation === ann.id;
+                  return (
+                    <div
+                      key={ann.id}
+                      className="absolute z-20"
+                      style={{ left: `${ann.x * 100}%`, top: `${ann.y * 100}%`, transform: 'translate(-50%, -50%)' }}
+                    >
+                      {isEditing ? (
+                        <div className="bg-white border-2 border-primary rounded-lg shadow-xl p-2 w-48 animate-in zoom-in-95">
+                          <Textarea
+                            autoFocus
+                            defaultValue={ann.content}
+                            className="min-h-[80px] text-sm resize-none"
+                            onBlur={(e) => {
+                              onUpdateAnnotation(ann.id, e.target.value);
+                              setEditingAnnotation(null);
+                            }}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter' && e.metaKey) {
+                                onUpdateAnnotation(ann.id, (e.target as HTMLTextAreaElement).value);
+                                setEditingAnnotation(null);
+                              }
+                            }}
+                          />
+                          <div className="flex justify-end mt-2">
+                            <Button size="sm" className="h-7" onClick={() => setEditingAnnotation(null)}>
+                              <Check className="h-3 w-3 mr-1" />
+                              完成
+                            </Button>
+                          </div>
+                        </div>
+                      ) : (
+                        <div 
+                          className="group relative"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setEditingAnnotation(ann.id);
+                          }}
+                        >
+                          <div className="w-8 h-8 bg-amber-400 rounded-full shadow-lg flex items-center justify-center cursor-pointer hover:scale-110 transition-transform border-2 border-white">
+                            <MessageSquare className="h-4 w-4 text-amber-900" />
+                          </div>
+                          {ann.content && (
+                            <div className="absolute left-10 top-0 bg-white border shadow-lg rounded-lg p-2 w-48 opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-30">
+                              <p className="text-xs text-muted-foreground line-clamp-3">{ann.content}</p>
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  );
+                }
+                return null;
+              })}
+
+              {/* 临时批注输入 */}
+              {tempNote && (
+                <div
+                  className="absolute z-30"
+                  style={{ left: `${tempNote.x * 100}%`, top: `${tempNote.y * 100}%`, transform: 'translate(-50%, -50%)' }}
+                >
+                  <div className="bg-white border-2 border-primary rounded-lg shadow-xl p-3 w-56 animate-in zoom-in-95">
+                    <Textarea
+                      autoFocus
+                      placeholder="输入批注..."
+                      className="min-h-[100px] text-sm resize-none"
+                      value={tempNote.content}
+                      onChange={(e) => setTempNote({ ...tempNote, content: e.target.value })}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' && e.metaKey) {
+                          handleAddNote();
+                        }
+                        if (e.key === 'Escape') {
+                          setTempNote(null);
+                          setActiveTool('select');
+                        }
+                      }}
+                    />
+                    <div className="flex justify-end gap-2 mt-2">
+                      <Button size="sm" variant="ghost" className="h-7" onClick={() => {
+                        setTempNote(null);
+                        setActiveTool('select');
+                      }}>
+                        取消
+                      </Button>
+                      <Button size="sm" className="h-7" onClick={handleAddNote}>
+                        添加
+                      </Button>
+                    </div>
+                  </div>
+                </div>
               )}
-            >
-              批注 ({annotations.length})
-            </button>
+            </div>
+          </Document>
+        </div>
+      </div>
+
+      {/* 缩略图侧边栏 */}
+      {!isMobile && sidebarOpen && (
+        <div className="w-56 border-l bg-background/95 backdrop-blur-md flex flex-col shrink-0 h-full absolute right-0 top-0 z-30 shadow-xl">
+          <div className="flex items-center justify-between p-3 border-b">
+            <span className="font-semibold text-sm">页面导航</span>
+            <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => setSidebarOpen(false)}>
+              <X className="h-4 w-4" />
+            </Button>
           </div>
           <ScrollArea className="flex-1">
             <Document file={fileUrl}>
-              {sidebarTab === 'thumbnails' ? (
-                <div className="p-2 space-y-2">
-                  {Array.from({ length: numPages }, (_, i) => i + 1).map(page => (
-                    <button
-                      key={page}
-                      onClick={() => goToPage(page)}
-                      className={cn(
-                        "w-full relative aspect-[3/4] rounded-lg overflow-hidden transition-all",
-                        pageNumber === page ? "ring-2 ring-primary ring-offset-1" : "opacity-60 hover:opacity-100"
-                      )}
-                    >
-                      <Page pageNumber={page} scale={0.15} renderTextLayer={false} renderAnnotationLayer={false} />
-                      <div className="absolute bottom-0 inset-x-0 bg-black/60 text-white text-[10px] py-0.5 text-center">
-                        {page}
-                      </div>
-                    </button>
-                  ))}
-                </div>
-              ) : (
-                <div className="p-3 space-y-3">
-                  {annotations.length === 0 ? (
-                    <div className="text-center text-muted-foreground py-8 text-sm">
-                      <MessageSquare className="h-8 w-8 mx-auto mb-2 opacity-50" />
-                      暂无批注
+              <div className="p-2 space-y-2">
+                {Array.from({ length: numPages }, (_, i) => i + 1).map(page => (
+                  <button
+                    key={page}
+                    onClick={() => goToPage(page)}
+                    className={cn(
+                      "w-full relative aspect-[3/4] rounded-lg overflow-hidden transition-all border-2",
+                      pageNumber === page ? "border-primary opacity-100" : "border-transparent opacity-50 hover:opacity-80"
+                    )}
+                  >
+                    <Page pageNumber={page} scale={0.12} renderTextLayer={false} renderAnnotationLayer={false} />
+                    <div className="absolute bottom-0 inset-x-0 bg-black/60 text-white text-[10px] py-0.5 text-center">
+                      {page}
                     </div>
-                  ) : (
-                    annotations.map(ann => (
-                      <div
-                        key={ann.id}
-                        onClick={() => {
-                          goToPage(ann.page);
-                          setSelectedAnnotation(ann);
-                        }}
-                        className={cn(
-                          "p-3 rounded-lg border text-sm cursor-pointer transition-colors",
-                          selectedAnnotation?.id === ann.id ? "border-primary bg-primary/5" : "border-border hover:bg-accent"
-                        )}
-                      >
-                        <div className="flex items-center gap-2 mb-1 text-xs text-muted-foreground">
-                          <span className={cn(
-                            "w-2 h-2 rounded-full",
-                            ann.type === 'highlight' ? "bg-yellow-400" : "bg-amber-400"
-                          )} />
-                          <span>第 {ann.page} 页</span>
-                        </div>
-                        <p className="line-clamp-2 text-xs">{ann.content || ann.quote || '[无文本]'}</p>
-                      </div>
-                    ))
-                  )}
-                </div>
-              )}
+                  </button>
+                ))}
+              </div>
             </Document>
           </ScrollArea>
         </div>
       )}
 
-      <div className="flex-1 flex flex-col relative h-full w-full min-w-0">
-        {/* 顶部导航 - 全屏时隐藏 */}
-        {!isFullscreen && (
-          <div className="h-14 border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60 flex items-center justify-between px-4 shrink-0 z-20">
-            <div className="flex items-center gap-2">
-              {onClose && (
-                <Button variant="ghost" size="icon" className="h-8 w-8" onClick={onClose}>
-                  <ArrowLeft className="h-4 w-4" />
-                </Button>
-              )}
-              {!isMobile && !sidebarOpen && (
-                <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => setSidebarOpen(true)}>
-                  <PanelRight className="h-4 w-4" />
-                </Button>
-              )}
-              {isMobile && (
-                <Button variant="ghost" size="sm" className="h-8 gap-1" onClick={() => setViewMode('thumbnails')}>
-                  <LayoutGrid className="h-4 w-4" />
-                  目录
-                </Button>
-              )}
-            </div>
-
-            <div className="flex items-center gap-3">
-              <span className="text-sm font-medium tabular-nums">
-                {pageNumber} / {numPages}
-              </span>
-            </div>
-
-            <div className="flex items-center gap-1">
-              {!isMobile && (
-                <div className="flex items-center gap-1 mr-2">
-                  <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => handleZoom(-0.2)}>
-                    <ZoomOut className="h-4 w-4" />
-                  </Button>
-                  <span className="text-xs w-12 text-center font-mono">{Math.round(scale * 100)}%</span>
-                  <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => handleZoom(0.2)}>
-                    <ZoomIn className="h-4 w-4" />
-                  </Button>
-                </div>
-              )}
-              <Button variant="ghost" size="icon" className="h-8 w-8" onClick={toggleFullscreen}>
-                <Maximize2 className="h-4 w-4" />
-              </Button>
-              <Sheet>
-                <SheetTrigger asChild>
-                  <Button variant="ghost" size="icon" className="h-8 w-8">
-                    <MoreVertical className="h-4 w-4" />
-                  </Button>
-                </SheetTrigger>
-                <SheetContent side="bottom" className="h-auto">
-                  <SheetHeader className="pb-4">
-                    <SheetTitle className="text-left">{book.title}</SheetTitle>
-                  </SheetHeader>
-                  <div className="grid grid-cols-4 gap-3">
-                    <Button variant="outline" className="flex-col h-auto py-4 gap-1" onClick={() => setViewMode('thumbnails')}>
-                      <LayoutGrid className="h-5 w-5" />
-                      <span className="text-xs">缩略图</span>
-                    </Button>
-                    <Button variant="outline" className="flex-col h-auto py-4 gap-1" onClick={resetZoom}>
-                      <Undo2 className="h-5 w-5" />
-                      <span className="text-xs">重置</span>
-                    </Button>
-                    <Button variant="outline" className="flex-col h-auto py-4 gap-1" onClick={() => setRotation(r => (r + 90) % 360)}>
-                      <RotateCw className="h-5 w-5" />
-                      <span className="text-xs">旋转</span>
-                    </Button>
-                    <Button variant="outline" className="flex-col h-auto py-4 gap-1" onClick={() => setIsDownloadDialogOpen(true)}>
-                      <Download className="h-5 w-5" />
-                      <span className="text-xs">下载</span>
-                    </Button>
-                  </div>
-                </SheetContent>
-              </Sheet>
-            </div>
-          </div>
-        )}
-
-        {/* 全屏悬浮控制栏 - 始终可交互 */}
-        {isFullscreen && (
-          <div className={cn(
-            "absolute top-0 left-0 right-0 z-50 bg-gradient-to-b from-black/80 to-transparent pb-12 pt-4 px-4 transition-all duration-300",
-            showFullscreenControls ? "opacity-100 translate-y-0" : "opacity-0 -translate-y-full pointer-events-none"
-          )}>
-            <div className="flex items-center justify-between max-w-3xl mx-auto">
-              <div className="flex items-center gap-2 bg-black/50 backdrop-blur-md rounded-full px-4 py-2 text-white">
-                <Button variant="ghost" size="icon" className="h-8 w-8 text-white hover:bg-white/20" onClick={goToPrev}>
-                  <ChevronLeft className="h-5 w-5" />
-                </Button>
-                <span className="text-sm font-medium tabular-nums min-w-[80px] text-center">
-                  {pageNumber} / {numPages}
-                </span>
-                <Button variant="ghost" size="icon" className="h-8 w-8 text-white hover:bg-white/20" onClick={goToNext}>
-                  <ChevronRight className="h-5 w-5" />
-                </Button>
-              </div>
-
-              <div className="flex items-center gap-2 bg-black/50 backdrop-blur-md rounded-full px-3 py-2 text-white">
-                <Button variant="ghost" size="icon" className="h-8 w-8 text-white hover:bg-white/20" onClick={() => handleZoom(-0.2)}>
-                  <ZoomOut className="h-4 w-4" />
-                </Button>
-                <span className="text-xs w-12 text-center font-mono">{Math.round(scale * 100)}%</span>
-                <Button variant="ghost" size="icon" className="h-8 w-8 text-white hover:bg-white/20" onClick={() => handleZoom(0.2)}>
-                  <ZoomIn className="h-4 w-4" />
-                </Button>
-                <div className="w-px h-4 bg-white/30 mx-1" />
-                <Button variant="ghost" size="icon" className="h-8 w-8 text-white hover:bg-white/20" onClick={toggleFullscreen}>
-                  <Minimize2 className="h-4 w-4" />
-                </Button>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* 全屏模式底部提示 */}
-        {isFullscreen && showFullscreenHint && (
-          <div className="absolute bottom-8 left-1/2 -translate-x-1/2 z-40 bg-black/70 backdrop-blur-md text-white px-6 py-3 rounded-full text-sm animate-in fade-in slide-in-from-bottom-4">
-            <div className="flex items-center gap-3">
-              <Info className="h-4 w-4" />
-              <span>双击放大 · 双指缩放 · 顶部下滑退出</span>
-              <button onClick={() => setShowFullscreenHint(false)} className="ml-2 hover:bg-white/20 rounded-full p-1">
-                <X className="h-3 w-3" />
-              </button>
-            </div>
-          </div>
-        )}
-
-        {/* 工具模式提示 */}
-        {activeTool !== 'select' && !isFullscreen && (
-          <div className="absolute top-20 left-1/2 -translate-x-1/2 z-30 bg-primary text-primary-foreground px-4 py-2 rounded-full text-sm shadow-lg flex items-center gap-2 animate-in fade-in zoom-in-95">
-            <span>{activeTool === 'highlight' ? '选中文本即可高亮' : '点击页面添加批注'}</span>
-            <button onClick={() => setActiveTool('select')} className="hover:opacity-80 p-1">
-              <X className="h-3 w-3" />
-            </button>
-          </div>
-        )}
-
-        {/* 浮动工具栏（文本选中后） */}
-        {showFloatingTools && selection && !isFullscreen && (
-          <div 
-            className="absolute z-40 bg-popover border shadow-xl rounded-full p-1.5 flex items-center gap-1 animate-in zoom-in-95"
-            style={{
-              left: '50%',
-              top: Math.min(...selection.rects.map(r => r.top)) - 70,
-              transform: 'translateX(-50%)',
-            }}
+      {/* 移动端底部栏 */}
+      {isMobile && !isFullscreen && (
+        <div className="absolute bottom-0 left-0 right-0 h-16 bg-background/95 backdrop-blur-md border-t flex items-center justify-around z-30">
+          <button onClick={() => setViewMode('thumbnails')} className="flex flex-col items-center gap-1 text-muted-foreground">
+            <LayoutGrid className="h-5 w-5" />
+            <span className="text-[10px]">目录</span>
+          </button>
+          
+          <button onClick={goToPrev} disabled={pageNumber <= 1} className="p-2 disabled:opacity-30">
+            <ChevronLeft className="h-6 w-6" />
+          </button>
+          
+          <button 
+            onClick={() => setSidebarOpen(true)} 
+            className="flex flex-col items-center px-4"
           >
-            <Button size="sm" className="rounded-full h-8 px-3" onClick={() => addHighlight()}>
-              <Highlighter className="h-3.5 w-3.5 mr-1" />
-              高亮
-            </Button>
-            <Button size="sm" variant="secondary" className="rounded-full h-8 px-3" onClick={() => addHighlight()}>
-              <Type className="h-3.5 w-3.5 mr-1" />
-              备注
-            </Button>
-            <Button size="sm" variant="ghost" className="rounded-full h-8 w-8 p-0" onClick={() => { 
-              setSelection(null);
-              window.getSelection()?.removeAllRanges();
-              setShowFloatingTools(false);
-            }}>
-              <X className="h-4 w-4" />
-            </Button>
-          </div>
-        )}
+            <span className="text-lg font-bold tabular-nums">{pageNumber}</span>
+            <span className="text-[10px] text-muted-foreground">/{numPages}</span>
+          </button>
+          
+          <button onClick={goToNext} disabled={pageNumber >= numPages} className="p-2 disabled:opacity-30">
+            <ChevronRight className="h-6 w-6" />
+          </button>
 
-        {/* PDF 内容区域 */}
-        <div 
-          ref={scrollRef}
-          className={cn(
-            "flex-1 overflow-auto relative touch-pan-y select-text bg-muted/20",
-            isFullscreen ? "bg-black" : "bg-muted/20"
-          )}
-          onTouchStart={onTouchStart}
-          onTouchMove={onTouchMove}
-          onTouchEnd={onTouchEnd}
-          onMouseUp={handleTextSelection}
-          onClick={() => isFullscreen && setShowFullscreenControls(true)}
-        >
-          <div className="min-h-full w-full flex items-center justify-center p-4 md:p-8">
-            {loadError ? (
-              <div className="flex flex-col items-center justify-center text-muted-foreground p-8">
-                <div className="w-16 h-16 bg-destructive/10 rounded-full flex items-center justify-center mb-4">
-                  <X className="h-8 w-8 text-destructive" />
-                </div>
-                <p className="text-lg font-medium mb-2">{loadError}</p>
-                <Button onClick={() => window.location.reload()} variant="outline" className="mt-4">
-                  重新加载
-                </Button>
-              </div>
-            ) : (
-              <Document 
-                file={fileUrl} 
-                onLoadSuccess={onDocumentLoadSuccess}
-                onLoadError={onDocumentLoadError}
-                loading={
-                  <div className="flex items-center justify-center h-[50vh]">
-                    <div className="flex flex-col items-center gap-4">
-                      <div className="w-10 h-10 border-4 border-primary border-t-transparent rounded-full animate-spin" />
-                      <p className="text-sm text-muted-foreground">加载中...</p>
-                    </div>
-                  </div>
-                }
-              >
-                <div
-                  ref={pageRef}
-                  className={cn(
-                    "relative shadow-2xl bg-white transition-transform duration-200 ease-out origin-center",
-                    activeTool === 'note' ? "cursor-crosshair" : "cursor-text",
-                    isPinching && "transition-none"
-                  )}
-                  style={{ 
-                    transform: `scale(${scale})`,
-                    touchAction: isPinching ? 'none' : 'pan-y',
-                  }}
-                  onClick={(e) => handlePageClick(e, pageNumber)}
-                  data-page-number={pageNumber}
-                >
-                  <Page
-                    pageNumber={pageNumber}
-                    scale={1}
-                    rotate={rotation}
-                    renderTextLayer={true}
-                    renderAnnotationLayer={false}
-                    className="shadow-2xl"
-                    loading={
-                      <div className="w-[350px] h-[500px] md:w-[600px] md:h-[800px] flex items-center justify-center bg-white">
-                        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary" />
-                      </div>
-                    }
-                  />
-                  
-                  {renderHighlights(pageNumber)}
-                  
-                  {currentAnnotations.filter(a => a.type === 'note').map(ann => {
-                    if (ann.x === undefined || ann.y === undefined) return null;
-                    return (
-                      <button
-                        key={ann.id}
-                        className="absolute w-8 h-8 -ml-4 -mt-4 rounded-full bg-amber-400 hover:bg-amber-500 flex items-center justify-center shadow-lg transition-transform hover:scale-110 z-10 border-2 border-white"
-                        style={{ left: `${ann.x * 100}%`, top: `${ann.y * 100}%` }}
-                        onClick={(e: React.MouseEvent) => {
-                          e.stopPropagation();
-                          setSelectedAnnotation(ann);
-                        }}
-                      >
-                        <MessageSquare className="h-4 w-4 text-amber-900" />
-                      </button>
-                    );
-                  })}
-
-                  {pendingNote?.page === pageNumber && (
-                    <div
-                      className="absolute w-8 h-8 -ml-4 -mt-4 rounded-full bg-primary flex items-center justify-center shadow-lg z-20 border-2 border-white animate-bounce"
-                      style={{ left: `${pendingNote.x * 100}%`, top: `${pendingNote.y * 100}%` }}
-                    >
-                      <Plus className="h-4 w-4 text-primary-foreground" />
-                    </div>
-                  )}
-                </div>
-              </Document>
-            )}
-          </div>
+          <button onClick={toggleFullscreen} className="flex flex-col items-center gap-1 text-muted-foreground">
+            <Maximize2 className="h-5 w-5" />
+            <span className="text-[10px]">全屏</span>
+          </button>
         </div>
-
-        {/* 移动端底部 Dock - 全屏时隐藏 */}
-        {isMobile && !isFullscreen && (
-          <div className="h-16 border-t bg-background/95 backdrop-blur-md shrink-0 z-30">
-            <div className="flex items-center justify-around h-full px-2">
-              <button 
-                onClick={() => setViewMode('thumbnails')}
-                className="flex flex-col items-center justify-center w-14 h-full gap-0.5 text-muted-foreground active:text-foreground"
-              >
-                <LayoutGrid className="h-5 w-5" />
-                <span className="text-[10px]">目录</span>
-              </button>
-
-              <button 
-                onClick={goToPrev}
-                disabled={pageNumber <= 1}
-                className="flex items-center justify-center w-12 h-12 rounded-full active:bg-accent disabled:opacity-30 transition-colors"
-              >
-                <ChevronLeft className="h-6 w-6" />
-              </button>
-
-              <button 
-                onClick={() => setSidebarOpen(true)}
-                className="flex flex-col items-center justify-center min-w-[80px] h-full"
-              >
-                <span className="text-lg font-semibold leading-none tabular-nums">{pageNumber}</span>
-                <span className="text-[10px] text-muted-foreground mt-0.5">{numPages}</span>
-              </button>
-
-              <button 
-                onClick={goToNext}
-                disabled={pageNumber >= numPages}
-                className="flex items-center justify-center w-12 h-12 rounded-full active:bg-accent disabled:opacity-30 transition-colors"
-              >
-                <ChevronRight className="h-6 w-6" />
-              </button>
-
-              <Sheet>
-                <SheetTrigger asChild>
-                  <button className="flex flex-col items-center justify-center w-14 h-full gap-0.5 text-muted-foreground active:text-foreground relative">
-                    <div className="relative">
-                      <StickyNote className="h-5 w-5" />
-                      {annotations.length > 0 && (
-                        <span className="absolute -top-1 -right-1 w-3.5 h-3.5 bg-primary text-[8px] text-primary-foreground rounded-full flex items-center justify-center font-medium">
-                          {annotations.length}
-                        </span>
-                      )}
-                    </div>
-                    <span className="text-[10px]">工具</span>
-                  </button>
-                </SheetTrigger>
-                <SheetContent side="bottom" className="h-[60vh]">
-                  <SheetHeader className="pb-4">
-                    <SheetTitle className="text-left">阅读工具</SheetTitle>
-                  </SheetHeader>
-                  
-                  <div className="grid grid-cols-4 gap-3 mb-6">
-                    <button
-                      onClick={() => setActiveTool(activeTool === 'highlight' ? 'select' : 'highlight')}
-                      className={cn(
-                        "flex flex-col items-center gap-2 p-3 rounded-xl border-2 transition-all",
-                        activeTool === 'highlight' 
-                          ? "border-primary bg-primary/5 text-primary" 
-                          : "border-border hover:border-primary/50"
-                      )}
-                    >
-                      <Highlighter className="h-6 w-6" />
-                      <span className="text-xs">高亮</span>
-                    </button>
-                    
-                    <button
-                      onClick={() => setActiveTool(activeTool === 'note' ? 'select' : 'note')}
-                      className={cn(
-                        "flex flex-col items-center gap-2 p-3 rounded-xl border-2 transition-all",
-                        activeTool === 'note' 
-                          ? "border-primary bg-primary/5 text-primary" 
-                          : "border-border hover:border-primary/50"
-                      )}
-                    >
-                      <Plus className="h-6 w-6" />
-                      <span className="text-xs">笔记</span>
-                    </button>
-
-                    <button
-                      onClick={() => { handleZoom(-0.2); toast.success(`${Math.round((scale - 0.2) * 100)}%`); }}
-                      className="flex flex-col items-center gap-2 p-3 rounded-xl border-2 border-border hover:border-primary/50 transition-all"
-                    >
-                      <ZoomOut className="h-6 w-6" />
-                      <span className="text-xs">缩小</span>
-                    </button>
-
-                    <button
-                      onClick={() => { handleZoom(0.2); toast.success(`${Math.round((scale + 0.2) * 100)}%`); }}
-                      className="flex flex-col items-center gap-2 p-3 rounded-xl border-2 border-border hover:border-primary/50 transition-all"
-                    >
-                      <ZoomIn className="h-6 w-6" />
-                      <span className="text-xs">放大</span>
-                    </button>
-                  </div>
-
-                  <div className="space-y-2">
-                    <Button variant="outline" className="w-full justify-start" onClick={resetZoom}>
-                      <Undo2 className="h-4 w-4 mr-2" />
-                      重置缩放 (100%)
-                    </Button>
-                    <Button variant="outline" className="w-full justify-start" onClick={toggleFullscreen}>
-                      <Maximize2 className="h-4 w-4 mr-2" />
-                      进入全屏阅读
-                    </Button>
-                  </div>
-
-                  <ScrollArea className="h-[calc(100%-240px)] mt-4">
-                    <h4 className="text-sm font-medium mb-3 text-muted-foreground">批注列表</h4>
-                    {annotations.length === 0 ? (
-                      <div className="text-center text-muted-foreground py-8 text-sm">
-                        暂无批注，点击上方工具开始添加
-                      </div>
-                    ) : (
-                      <div className="space-y-2">
-                        {annotations.map(ann => (
-                          <div
-                            key={ann.id}
-                            onClick={() => { goToPage(ann.page); setSelectedAnnotation(ann); }}
-                            className="p-3 rounded-lg border bg-card active:bg-accent/50 transition-colors text-sm"
-                          >
-                            <div className="flex items-center gap-2 text-xs text-muted-foreground mb-1">
-                              <span className={cn("w-2 h-2 rounded-full", ann.type === 'highlight' ? "bg-yellow-400" : "bg-amber-400")} />
-                              <span>第 {ann.page} 页</span>
-                            </div>
-                            <p className="line-clamp-2">{ann.content || ann.quote}</p>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                  </ScrollArea>
-                </SheetContent>
-              </Sheet>
-            </div>
-          </div>
-        )}
-
-        {/* 手势提示 */}
-        {isMobile && showGestureHint && !isFullscreen && (
-          <div className="absolute inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-6 animate-in fade-in">
-            <div className="bg-background rounded-2xl p-6 max-w-sm w-full shadow-2xl space-y-4">
-              <div className="text-center">
-                <div className="w-16 h-16 bg-primary/10 rounded-full flex items-center justify-center mx-auto mb-4">
-                  <BookOpen className="h-8 w-8 text-primary" />
-                </div>
-                <h3 className="text-lg font-semibold">阅读手势</h3>
-                <p className="text-sm text-muted-foreground mt-1">专为文献阅读优化</p>
-              </div>
-              
-              <div className="space-y-3 text-sm">
-                <div className="flex items-center gap-3 p-3 bg-muted rounded-lg">
-                  <div className="w-10 h-10 bg-background rounded-full flex items-center justify-center shrink-0 border text-lg">👆</div>
-                  <div>
-                    <p className="font-medium">左右滑动</p>
-                    <p className="text-xs text-muted-foreground">快速翻页</p>
-                  </div>
-                </div>
-                <div className="flex items-center gap-3 p-3 bg-muted rounded-lg">
-                  <div className="w-10 h-10 bg-background rounded-full flex items-center justify-center shrink-0 border text-lg">👐</div>
-                  <div>
-                    <p className="font-medium">双指捏合</p>
-                    <p className="text-xs text-muted-foreground">精确缩放文献</p>
-                  </div>
-                </div>
-                <div className="flex items-center gap-3 p-3 bg-muted rounded-lg">
-                  <div className="w-10 h-10 bg-background rounded-full flex items-center justify-center shrink-0 border text-lg">👆👆</div>
-                  <div>
-                    <p className="font-medium">双击页面</p>
-                    <p className="text-xs text-muted-foreground">快速放大/重置</p>
-                  </div>
-                </div>
-              </div>
-
-              <Button className="w-full" onClick={() => {
-                setShowGestureHint(false);
-                localStorage.setItem('pdf-gesture-hint-seen', 'true');
-              }}>
-                开始使用
-              </Button>
-            </div>
-          </div>
-        )}
-      </div>
+      )}
 
       {/* 对话框 */}
-      <Dialog open={!!pendingNote} onOpenChange={() => setPendingNote(null)}>
-        <DialogContent className="sm:max-w-md">
-          <DialogHeader>
-            <DialogTitle>添加批注</DialogTitle>
-          </DialogHeader>
-          <Textarea placeholder="写下你的想法..." autoFocus className="mt-4 min-h-[100px]" />
-          <div className="flex justify-end gap-2 mt-4">
-            <Button variant="outline" onClick={() => setPendingNote(null)}>取消</Button>
-            <Button onClick={(e: React.MouseEvent<HTMLButtonElement>) => {
-              const textarea = e.currentTarget.parentElement?.previousElementSibling as HTMLTextAreaElement;
-              confirmAddNote(textarea?.value || '');
-            }}>
-              <Check className="h-4 w-4 mr-2" />
-              添加
-            </Button>
-          </div>
-        </DialogContent>
-      </Dialog>
-
-      <Dialog open={!!selectedAnnotation} onOpenChange={() => { setSelectedAnnotation(null); setEditingAnnotation(null); }}>
+      <Dialog open={!!selectedAnnotation} onOpenChange={() => setSelectedAnnotation(null)}>
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
-              {selectedAnnotation?.type === 'highlight' ? <Highlighter className="h-5 w-5" /> : <MessageSquare className="h-5 w-5" />}
-              {selectedAnnotation?.type === 'highlight' ? '高亮批注' : '笔记'}
+              <MessageSquare className="h-5 w-5" />
+              批注详情
             </DialogTitle>
           </DialogHeader>
           <div className="mt-4">
-            {selectedAnnotation?.quote && (
-              <div className="bg-yellow-50 border-l-4 border-yellow-400 p-3 mb-4 text-sm italic text-muted-foreground">
-                "{selectedAnnotation.quote}"
-              </div>
-            )}
-            {editingAnnotation?.id === selectedAnnotation?.id ? (
-              <>
-                <Textarea defaultValue={selectedAnnotation?.content} className="min-h-[100px]" autoFocus />
-                <div className="flex gap-2 mt-4">
-                  <Button variant="outline" className="flex-1" onClick={() => setEditingAnnotation(null)}>取消</Button>
-                  <Button className="flex-1" onClick={(e: React.MouseEvent<HTMLButtonElement>) => {
-                    const content = (e.currentTarget.parentElement?.previousElementSibling as HTMLTextAreaElement)?.value;
-                    if (selectedAnnotation && content !== undefined) {
-                      onUpdateAnnotation(selectedAnnotation.id, content);
-                      setEditingAnnotation(null);
-                      setSelectedAnnotation(null);
-                      toast.success('已更新');
-                    }
-                  }}>保存</Button>
-                </div>
-              </>
-            ) : (
-              <>
-                <div className="bg-muted p-4 rounded-lg mb-4 min-h-[60px]">
-                  <p className="whitespace-pre-wrap text-sm">{selectedAnnotation?.content || <span className="text-muted-foreground italic">暂无笔记内容</span>}</p>
-                </div>
-                <div className="flex items-center justify-between text-xs text-muted-foreground mb-4">
-                  <span>第 {selectedAnnotation?.page} 页</span>
-                  <span>{selectedAnnotation?.createdAt && formatDate(selectedAnnotation.createdAt)}</span>
-                </div>
-                <div className="flex gap-2">
-                  <Button variant="outline" className="flex-1" onClick={() => selectedAnnotation && setEditingAnnotation(selectedAnnotation)}>
-                    <Pencil className="h-4 w-4 mr-2" />
-                    编辑
-                  </Button>
-                  <Button variant="destructive" className="flex-1" onClick={() => selectedAnnotation && handleDelete(selectedAnnotation.id)}>
-                    <Trash2 className="h-4 w-4 mr-2" />
-                    删除
-                  </Button>
-                </div>
-              </>
-            )}
+            <p className="text-sm text-muted-foreground mb-2">第 {selectedAnnotation?.page} 页</p>
+            <div className="bg-muted p-4 rounded-lg mb-4">
+              <p className="whitespace-pre-wrap text-sm">{selectedAnnotation?.content}</p>
+            </div>
+            <div className="flex gap-2">
+              <Button variant="outline" className="flex-1" onClick={() => {
+                setEditingAnnotation(selectedAnnotation?.id || null);
+                setSelectedAnnotation(null);
+              }}>
+                <Pencil className="h-4 w-4 mr-2" />
+                编辑
+              </Button>
+              <Button variant="destructive" className="flex-1" onClick={() => selectedAnnotation && handleDelete(selectedAnnotation.id)}>
+                <Trash2 className="h-4 w-4 mr-2" />
+                删除
+              </Button>
+            </div>
           </div>
         </DialogContent>
       </Dialog>
@@ -1189,11 +902,11 @@ export function PDFViewer({
             </DialogTitle>
           </DialogHeader>
           <div className="py-4 space-y-4">
-            <p className="text-sm text-muted-foreground">下载《{book.title}》的 PDF 文件</p>
+            <p className="text-sm text-muted-foreground">下载《{book.title}》</p>
             <div className="flex items-center space-x-2">
               <Checkbox id="include-annotations" checked={includeAnnotations} onCheckedChange={(checked) => setIncludeAnnotations(checked as boolean)} />
               <label htmlFor="include-annotations" className="text-sm font-medium">
-                同时导出批注 ({annotations.length} 条)
+                包含批注 ({annotations.length})
               </label>
             </div>
           </div>
@@ -1201,38 +914,11 @@ export function PDFViewer({
             <Button variant="outline" onClick={() => setIsDownloadDialogOpen(false)}>取消</Button>
             <Button onClick={() => { onDownloadFile?.(includeAnnotations); setIsDownloadDialogOpen(false); }}>
               <Download className="h-4 w-4 mr-2" />
-              确认下载
+              下载
             </Button>
           </div>
         </DialogContent>
       </Dialog>
-
-      {/* 移动端页码选择 */}
-      {isMobile && (
-        <Sheet open={sidebarOpen} onOpenChange={setSidebarOpen}>
-          <SheetContent side="bottom" className="h-[70vh]">
-            <SheetHeader className="pb-4">
-              <SheetTitle className="text-left">跳转到页面</SheetTitle>
-            </SheetHeader>
-            <ScrollArea className="h-[calc(100%-80px)]">
-              <div className="grid grid-cols-6 gap-2">
-                {Array.from({ length: numPages }, (_, i) => i + 1).map(page => (
-                  <button
-                    key={page}
-                    onClick={() => { goToPage(page); setSidebarOpen(false); }}
-                    className={cn(
-                      "aspect-square rounded-lg flex items-center justify-center text-sm font-medium transition-colors",
-                      pageNumber === page ? "bg-primary text-primary-foreground" : "bg-muted hover:bg-accent"
-                    )}
-                  >
-                    {page}
-                  </button>
-                ))}
-              </div>
-            </ScrollArea>
-          </SheetContent>
-        </Sheet>
-      )}
     </div>
   );
 }
