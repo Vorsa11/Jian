@@ -137,11 +137,11 @@ export function PDFViewer({
     if (controlsTimer.current) clearTimeout(controlsTimer.current);
     setShowControls(true);
     controlsTimer.current = setTimeout(() => {
-      if (!isPinching && !isDragging && activeTool !== 'note') {
+      if (!isPinching && !isDragging && activeTool !== 'note' && !selectedAnnotation) {
         setShowControls(false);
       }
     }, 3000);
-  }, [isPinching, isDragging, activeTool]);
+  }, [isPinching, isDragging, activeTool, selectedAnnotation]);
 
   useEffect(() => {
     const handler = () => {
@@ -338,7 +338,7 @@ export function PDFViewer({
         const dy = Math.abs(target.clientY - startInfo.y);
         
         if (dt < 300 && dx < 10 && dy < 10 && tempNote) {
-          setActiveTool('select');
+          // 保持批注输入框打开
         }
       }
       
@@ -420,6 +420,7 @@ export function PDFViewer({
         type: 'note',
       });
       setTempNote(null);
+      setActiveTool('select');
       toast.success('批注已添加');
     }
   };
@@ -463,7 +464,7 @@ export function PDFViewer({
     
     sel.removeAllRanges();
     setActiveTool('select');
-    toast.success('已高亮');
+    toast.success('已高亮，点击高亮区域可删除');
   }, [activeTool, pageNumber, book.id, onAddAnnotation]);
 
   const handleDelete = useCallback((id: string) => {
@@ -472,10 +473,32 @@ export function PDFViewer({
     toast.success('已删除');
   }, [onDeleteAnnotation]);
 
+  // ESC 退出工具模式
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.target instanceof HTMLTextAreaElement) {
-        if (e.key === 'Escape') (e.target as HTMLElement).blur();
+        if (e.key === 'Escape') {
+          (e.target as HTMLElement).blur();
+          setEditingAnnotation(null);
+        }
+        return;
+      }
+      
+      if (e.key === 'Escape') {
+        if (selectedAnnotation) {
+          setSelectedAnnotation(null);
+          return;
+        }
+        if (activeTool !== 'select') {
+          setActiveTool('select');
+          setTempNote(null);
+          return;
+        }
+        if (document.fullscreenElement) {
+          document.exitFullscreen();
+        } else if (onClose) {
+          onClose();
+        }
         return;
       }
       
@@ -502,19 +525,12 @@ export function PDFViewer({
           e.preventDefault();
           resetView();
           break;
-        case 'Escape':
-          if (document.fullscreenElement) {
-            document.exitFullscreen();
-          } else if (onClose) {
-            onClose();
-          }
-          break;
       }
     };
     
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [goToNext, goToPrev, onClose]);
+  }, [goToNext, goToPrev, onClose, activeTool, selectedAnnotation]);
 
   const currentAnnotations = useMemo(() => 
     annotations.filter(a => a.page === pageNumber),
@@ -632,7 +648,7 @@ export function PDFViewer({
 
       <div className={cn(
         "absolute bottom-6 left-1/2 -translate-x-1/2 z-40 flex items-center gap-2 bg-background/95 backdrop-blur-md border rounded-full shadow-lg px-4 py-2 transition-all duration-300 ease-out",
-        (showControls || activeTool !== 'select') ? "opacity-100 translate-y-0" : "opacity-0 translate-y-10 pointer-events-none",
+        (showControls || activeTool !== 'select' || selectedAnnotation) ? "opacity-100 translate-y-0" : "opacity-0 translate-y-10 pointer-events-none",
         isFullscreen && "bg-black/90 border-white/10 text-white bottom-10"
       )}>
         <Button 
@@ -684,7 +700,7 @@ export function PDFViewer({
 
       {activeTool === 'highlight' && (
         <div className="absolute top-20 left-1/2 -translate-x-1/2 z-30 bg-primary text-primary-foreground px-4 py-2 rounded-full text-sm shadow-lg flex items-center gap-2 animate-in fade-in slide-in-from-top-2">
-          <span>选中文字即可高亮</span>
+          <span>选中文字添加高亮，点击高亮可删除</span>
           <button onClick={() => setActiveTool('select')} className="hover:opacity-80 p-1">
             <X className="h-3 w-3" />
           </button>
@@ -766,12 +782,18 @@ export function PDFViewer({
               
               {currentAnnotations.map(ann => {
                 if (ann.type === 'highlight' && ann.rects) {
+                  const isSelected = selectedAnnotation?.id === ann.id;
                   return (
                     <div key={ann.id} className="absolute inset-0 pointer-events-none">
                       {ann.rects.map((rect, i) => (
                         <div
                           key={i}
-                          className="absolute bg-yellow-300/60 pointer-events-auto cursor-pointer hover:bg-yellow-400/70 transition-all border-b-2 border-yellow-500/50"
+                          className={cn(
+                            "absolute pointer-events-auto cursor-pointer transition-all",
+                            isSelected 
+                              ? "bg-yellow-400/80 ring-2 ring-yellow-600 shadow-sm" 
+                              : "bg-yellow-300/60 hover:bg-yellow-400/70 border-b-2 border-yellow-500/50"
+                          )}
                           style={{
                             left: `${rect.left}%`,
                             top: `${rect.top}%`,
@@ -780,6 +802,11 @@ export function PDFViewer({
                           }}
                           onClick={(e) => {
                             e.stopPropagation();
+                            e.preventDefault();
+                            setSelectedAnnotation(ann);
+                          }}
+                          onContextMenu={(e) => {
+                            e.preventDefault();
                             setSelectedAnnotation(ann);
                           }}
                         />
@@ -789,6 +816,7 @@ export function PDFViewer({
                 }
                 if (ann.type === 'note') {
                   const isEditing = editingAnnotation === ann.id;
+                  const isSelected = selectedAnnotation?.id === ann.id;
                   return (
                     <div
                       key={ann.id}
@@ -821,16 +849,22 @@ export function PDFViewer({
                         </div>
                       ) : (
                         <div 
-                          className="group relative"
+                          className={cn(
+                            "group relative",
+                            isSelected && "scale-110"
+                          )}
                           onClick={(e) => {
                             e.stopPropagation();
-                            setEditingAnnotation(ann.id);
+                            setSelectedAnnotation(ann);
                           }}
                         >
-                          <div className="w-8 h-8 bg-amber-400 rounded-full shadow-lg flex items-center justify-center cursor-pointer hover:scale-110 transition-transform border-2 border-white ring-2 ring-amber-400/30">
-                            <MessageSquare className="h-4 w-4 text-amber-900" />
+                          <div className={cn(
+                            "w-8 h-8 rounded-full shadow-lg flex items-center justify-center cursor-pointer hover:scale-110 transition-transform border-2 border-white",
+                            isSelected ? "bg-amber-500 ring-2 ring-primary" : "bg-amber-400 ring-2 ring-amber-400/30"
+                          )}>
+                            <MessageSquare className="h-4 w-4 text-white" />
                           </div>
-                          {ann.content && (
+                          {ann.content && !isSelected && (
                             <div className="absolute left-10 top-0 bg-white border shadow-lg rounded-lg p-2 w-48 opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-30">
                               <p className="text-xs text-muted-foreground line-clamp-3">{ann.content}</p>
                             </div>
@@ -947,35 +981,51 @@ export function PDFViewer({
         </div>
       )}
 
+      {/* 统一的批注/高亮详情对话框 */}
       <Dialog open={!!selectedAnnotation} onOpenChange={() => setSelectedAnnotation(null)}>
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
-              <MessageSquare className="h-5 w-5 text-amber-500" />
-              批注详情
+              {selectedAnnotation?.type === 'highlight' ? (
+                <Highlighter className="h-5 w-5 text-yellow-600" />
+              ) : (
+                <MessageSquare className="h-5 w-5 text-amber-500" />
+              )}
+              {selectedAnnotation?.type === 'highlight' ? '文本高亮' : '批注详情'}
             </DialogTitle>
           </DialogHeader>
-          <div className="mt-4">
-            <p className="text-sm text-muted-foreground mb-2">第 {selectedAnnotation?.page} 页</p>
-            {selectedAnnotation?.quote && (
-              <div className="bg-yellow-50 border-l-4 border-yellow-400 p-3 mb-4 rounded-r-lg">
-                <p className="text-sm text-yellow-900 italic line-clamp-3">"{selectedAnnotation.quote}"</p>
+          <div className="mt-4 space-y-4">
+            <p className="text-sm text-muted-foreground">第 {selectedAnnotation?.page} 页</p>
+            
+            {selectedAnnotation?.type === 'highlight' && selectedAnnotation?.quote && (
+              <div className="bg-yellow-50 border-l-4 border-yellow-400 p-4 rounded-r-lg">
+                <p className="text-sm text-yellow-900 leading-relaxed">"{selectedAnnotation.quote}"</p>
               </div>
             )}
-            <div className="bg-muted p-4 rounded-lg mb-4">
-              <p className="whitespace-pre-wrap text-sm">{selectedAnnotation?.content || '无文本内容'}</p>
-            </div>
-            <div className="flex gap-2">
-              <Button variant="outline" className="flex-1" onClick={() => {
-                setEditingAnnotation(selectedAnnotation?.id || null);
-                setSelectedAnnotation(null);
-              }}>
-                <Pencil className="h-4 w-4 mr-2" />
-                编辑
-              </Button>
-              <Button variant="destructive" className="flex-1" onClick={() => selectedAnnotation && handleDelete(selectedAnnotation.id)}>
+            
+            {selectedAnnotation?.type === 'note' && (
+              <div className="bg-muted p-4 rounded-lg">
+                <p className="whitespace-pre-wrap text-sm">{selectedAnnotation.content || '无文本内容'}</p>
+              </div>
+            )}
+            
+            <div className="flex gap-2 pt-2">
+              {selectedAnnotation?.type === 'note' && (
+                <Button variant="outline" className="flex-1" onClick={() => {
+                  setEditingAnnotation(selectedAnnotation.id);
+                  setSelectedAnnotation(null);
+                }}>
+                  <Pencil className="h-4 w-4 mr-2" />
+                  编辑
+                </Button>
+              )}
+              <Button 
+                variant="destructive" 
+                className="flex-1" 
+                onClick={() => selectedAnnotation && handleDelete(selectedAnnotation.id)}
+              >
                 <Trash2 className="h-4 w-4 mr-2" />
-                删除
+                删除{selectedAnnotation?.type === 'highlight' ? '高亮' : '批注'}
               </Button>
             </div>
           </div>
