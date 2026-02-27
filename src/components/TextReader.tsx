@@ -238,6 +238,8 @@ export const TextReader: React.FC<TextReaderProps> = ({
   const [showChapters, setShowChapters] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [isReady, setIsReady] = useState(false);
+  
+  // 安全区域高度（刘海屏适配）
   const [safeAreaTop, setSafeAreaTop] = useState(0);
   const [safeAreaBottom, setSafeAreaBottom] = useState(0);
   
@@ -248,35 +250,31 @@ export const TextReader: React.FC<TextReaderProps> = ({
   
   const theme = THEMES[settings.theme] || THEMES[0];
 
-  // 获取安全区域高度（刘海屏适配）
+  // 获取安全区域高度
   useEffect(() => {
-    // 读取CSS环境变量中的安全区域高度
-    const getSafeArea = () => {
-      // 动态计算：在iOS上可以通过window.screen.height和window.innerHeight差值估算
-      // 但最可靠的是读取env(safe-area-inset-top)
-      const style = document.createElement('div').style;
-      style.position = 'fixed';
-      style.paddingTop = 'env(safe-area-inset-top)';
-      style.paddingBottom = 'env(safe-area-inset-bottom)';
-      document.body.appendChild(style as unknown as HTMLElement);
-      const computed = getComputedStyle(style as unknown as HTMLElement);
-      const sat = parseInt(computed.paddingTop || '0', 10);
-      const sab = parseInt(computed.paddingBottom || '0', 10);
-      document.body.removeChild(style as unknown as HTMLElement);
+    const updateSafeArea = () => {
+      // 使用 CSS 环境变量获取安全区域
+      const style = document.createElement('div');
+      style.style.position = 'fixed';
+      style.style.paddingTop = 'env(safe-area-inset-top)';
+      style.style.paddingBottom = 'env(safe-area-inset-bottom)';
+      style.style.paddingLeft = 'env(safe-area-inset-left)';
+      style.style.paddingRight = 'env(safe-area-inset-right)';
+      document.body.appendChild(style);
       
-      setSafeAreaTop(sat || 44); // 默认44px（iPhone刘海高度）
-      setSafeAreaBottom(sab || 34); // 默认34px（iPhone底部安全区）
+      const computed = getComputedStyle(style);
+      const sat = parseInt(computed.paddingTop) || 0;
+      const sab = parseInt(computed.paddingBottom) || 0;
+      
+      document.body.removeChild(style);
+      
+      setSafeAreaTop(sat);
+      setSafeAreaBottom(sab);
     };
 
-    getSafeArea();
-    
-    // 监听全屏变化，重新计算
-    const handleResize = () => {
-      getSafeArea();
-    };
-    
-    window.addEventListener('resize', handleResize);
-    return () => window.removeEventListener('resize', handleResize);
+    updateSafeArea();
+    window.addEventListener('resize', updateSafeArea);
+    return () => window.removeEventListener('resize', updateSafeArea);
   }, []);
 
   // 虚拟滚动配置
@@ -368,6 +366,11 @@ export const TextReader: React.FC<TextReaderProps> = ({
   useEffect(() => {
     const handler = () => {
       setIsFullscreen(!!document.fullscreenElement);
+      // 全屏状态变化时重新计算安全区域
+      setTimeout(() => {
+        const event = new Event('resize');
+        window.dispatchEvent(event);
+      }, 100);
     };
     document.addEventListener('fullscreenchange', handler);
     return () => document.removeEventListener('fullscreenchange', handler);
@@ -509,9 +512,9 @@ export const TextReader: React.FC<TextReaderProps> = ({
   
   if (!items.length) return null;
   
-  // 动态计算安全区域padding
-  const topSafeHeight = isFullscreen ? Math.max(safeAreaTop, 44) : 0; // 全屏时留出刘海高度
-  const bottomSafeHeight = isFullscreen ? Math.max(safeAreaBottom, 34) : 0; // 全屏时留出底部手势条
+  // 计算安全区域：全屏时如果有刘海，留出安全距离；非全屏按正常处理
+  const headerOffset = isFullscreen ? Math.max(safeAreaTop, 0) : 0;
+  const footerOffset = isFullscreen ? Math.max(safeAreaBottom, 0) : 0;
   
   return (
     <div 
@@ -520,19 +523,17 @@ export const TextReader: React.FC<TextReaderProps> = ({
         backgroundColor: theme.bg,
         fontFamily: settings.fontFamily,
         WebkitFontSmoothing: 'antialiased',
-        // 全屏模式下确保背景延伸到刘海区域
-        paddingTop: isFullscreen ? `${topSafeHeight}px` : 0,
-        paddingBottom: isFullscreen ? `${bottomSafeHeight}px` : 0,
-        boxSizing: 'border-box',
+        // 关键：使用 padding 将内容推离刘海和底部手势条
+        paddingTop: headerOffset,
+        paddingBottom: footerOffset,
       }}
     >
-      {/* 全屏模式下的状态栏背景填充（防止透明看到后面） */}
+      {/* 顶部状态栏背景填充（全屏时隐藏状态栏区域用背景色填充） */}
       {isFullscreen && (
         <div 
-          className="fixed left-0 right-0 z-[45] pointer-events-none"
+          className="fixed top-0 left-0 right-0 z-[60] pointer-events-none"
           style={{
-            top: 0,
-            height: `${topSafeHeight}px`,
+            height: safeAreaTop > 0 ? safeAreaTop : 0,
             backgroundColor: theme.bg,
           }}
         />
@@ -540,11 +541,7 @@ export const TextReader: React.FC<TextReaderProps> = ({
       
       {/* 加载遮罩 */}
       {!isReady && (
-        <div className="absolute inset-0 z-50 flex items-center justify-center" style={{ 
-          backgroundColor: theme.bg,
-          top: isFullscreen ? topSafeHeight : 0,
-          bottom: isFullscreen ? bottomSafeHeight : 0,
-        }}>
+        <div className="absolute inset-0 z-50 flex items-center justify-center" style={{ backgroundColor: theme.bg }}>
           <div className="flex flex-col items-center gap-4">
             <div className="w-8 h-8 border-4 border-t-transparent rounded-full animate-spin" style={{ borderColor: `${theme.accent}40`, borderTopColor: theme.accent }} />
             <span style={{ color: theme.text }}>加载中...</span>
@@ -552,23 +549,21 @@ export const TextReader: React.FC<TextReaderProps> = ({
         </div>
       )}
       
-      {/* 顶部栏 - 关键修改：全屏模式下增加顶部padding避开刘海 */}
+      {/* 顶部栏 - 全屏时向下偏移避开刘海，非全屏正常显示 */}
       <header 
         className={`absolute left-0 right-0 z-40 transition-all duration-300 ${
           showUI ? 'opacity-100 translate-y-0' : 'opacity-0 -translate-y-full pointer-events-none'
         }`}
         style={{ 
-          top: isFullscreen ? `${topSafeHeight}px` : 0, // 全屏时向下偏移避开刘海
+          top: headerOffset, // 关键：向下偏移避开刘海
           backgroundColor: `${theme.bg}f0`, 
           backdropFilter: 'blur(12px)',
           borderBottom: `1px solid ${theme.border}`,
-          // 非全屏模式下如果有刘海也稍微留点空间
-          paddingTop: !isFullscreen && safeAreaTop > 20 ? '8px' : 0,
         }}
       >
         <div className="h-14 px-4 flex items-center justify-between max-w-3xl mx-auto">
           <button onClick={onClose} className="p-2 -ml-2 rounded-full active:opacity-60" style={{ color: theme.text }}>
-            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2">
               <path d="M19 12H5M12 19l-7-7 7-7" />
             </svg>
           </button>
@@ -606,15 +601,16 @@ export const TextReader: React.FC<TextReaderProps> = ({
         </div>
       </header>
       
-      {/* 阅读区域 - 关键修改：全屏时调整padding避开刘海和底部手势条 */}
+      {/* 阅读区域 - 根据全屏状态调整 padding */}
       <div 
         ref={parentRef}
         className="flex-1 overflow-y-auto relative w-full h-full"
         onClick={handleContainerClick}
         style={{
-          // 全屏时内容区域向下偏移，不被刘海遮挡
-          paddingTop: isFullscreen ? `${topSafeHeight + 60}px` : (showUI ? '70px' : '24px'),
-          paddingBottom: isFullscreen ? `${bottomSafeHeight + 80}px` : (showUI ? '100px' : '60px'),
+          // 关键：内容区域顶部留出空间给 header + 安全区域
+          paddingTop: showUI ? (56 + headerOffset) : (24 + headerOffset),
+          // 关键：底部留出空间给 footer + 安全区域
+          paddingBottom: showUI ? (64 + footerOffset) : (40 + footerOffset),
         }}
       >
         <div
@@ -636,13 +632,13 @@ export const TextReader: React.FC<TextReaderProps> = ({
         </div>
       </div>
       
-      {/* 底部栏 - 关键修改：全屏时向上偏移避开底部手势条 */}
+      {/* 底部栏 - 全屏时向上偏移避开底部手势条 */}
       <footer 
         className={`absolute left-0 right-0 z-40 transition-all duration-300 ${
           showUI ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-full pointer-events-none'
         }`}
         style={{ 
-          bottom: isFullscreen ? `${bottomSafeHeight}px` : 0, // 全屏时向上偏移
+          bottom: footerOffset, // 关键：向上偏移
           backgroundColor: `${theme.bg}f0`, 
           backdropFilter: 'blur(12px)',
           borderTop: `1px solid ${theme.border}`,
@@ -694,14 +690,14 @@ export const TextReader: React.FC<TextReaderProps> = ({
         </div>
       </footer>
       
-      {/* 目录面板 */}
+      {/* 目录面板 - 适配安全区域 */}
       {showChapters && (
         <div className="absolute inset-0 z-50 flex">
           <div 
-            className="w-[min(320px,85vw)] h-full shadow-2xl panel flex flex-col"
+            className="w-[min(320px,85vw)] h-full shadow-2xl flex flex-col"
             style={{ 
               backgroundColor: theme.bg,
-              paddingTop: isFullscreen ? `${topSafeHeight}px` : 0,
+              paddingTop: headerOffset, // 适配刘海
             }}
           >
             <div className="p-4 border-b flex items-center justify-between" style={{ borderColor: theme.border }}>
@@ -729,7 +725,7 @@ export const TextReader: React.FC<TextReaderProps> = ({
         </div>
       )}
       
-      {/* 设置面板 */}
+      {/* 设置面板 - 适配安全区域 */}
       {showSettings && (
         <div className="absolute inset-0 z-50 flex justify-end">
           <div className="flex-1 bg-black/30" onClick={() => setShowSettings(false)} />
@@ -737,7 +733,7 @@ export const TextReader: React.FC<TextReaderProps> = ({
             className="w-[min(360px,90vw)] h-full shadow-2xl p-6 overflow-y-auto"
             style={{ 
               backgroundColor: theme.bg,
-              paddingTop: isFullscreen ? `${topSafeHeight + 20}px` : '24px',
+              paddingTop: 24 + headerOffset, // 适配刘海
             }}
           >
             <div className="flex items-center justify-between mb-6">
