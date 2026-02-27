@@ -26,6 +26,7 @@ import {
   StickyNote,
   Type,
   Undo2,
+  Info,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
@@ -119,11 +120,12 @@ export function PDFViewer({
   const [showGestureHint, setShowGestureHint] = useState(true);
   const [isPinching, setIsPinching] = useState(false);
   const [showFullscreenControls, setShowFullscreenControls] = useState(true);
+  const [showFullscreenHint, setShowFullscreenHint] = useState(false);
   
   const containerRef = useRef<HTMLDivElement>(null);
   const pageRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
-  const touchStart = useRef<{ x: number; y: number; time: number } | null>(null);
+  const touchStart = useRef<{ x: number; y: number; time: number; isTopEdge?: boolean } | null>(null);
   const pinchStartScale = useRef<number>(1);
   const touchStartDist = useRef<number>(0);
   const lastPinchDistance = useRef<number>(0);
@@ -158,20 +160,29 @@ export function PDFViewer({
   useEffect(() => {
     if (isFullscreen) {
       setShowFullscreenControls(true);
+      // 显示全屏提示
+      setShowFullscreenHint(true);
+      const hintTimer = setTimeout(() => setShowFullscreenHint(false), 4000);
+      
       if (fullscreenTimer.current) clearTimeout(fullscreenTimer.current);
       fullscreenTimer.current = setTimeout(() => {
         setShowFullscreenControls(false);
-      }, 3000);
+      }, 4000);
+      
+      return () => {
+        clearTimeout(hintTimer);
+        if (fullscreenTimer.current) clearTimeout(fullscreenTimer.current);
+      };
     }
-    return () => {
-      if (fullscreenTimer.current) clearTimeout(fullscreenTimer.current);
-    };
   }, [isFullscreen, pageNumber, scale]);
 
   // 监听全屏变化
   useEffect(() => {
     const handleFullscreenChange = () => {
       setIsFullscreen(!!document.fullscreenElement);
+      if (!document.fullscreenElement) {
+        setShowFullscreenHint(false);
+      }
     };
     document.addEventListener('fullscreenchange', handleFullscreenChange);
     return () => document.removeEventListener('fullscreenchange', handleFullscreenChange);
@@ -194,7 +205,6 @@ export function PDFViewer({
     localStorage.setItem(`pdf-progress-${book.id}`, String(target));
     setSelection(null);
     window.getSelection()?.removeAllRanges();
-    // 重置滚动位置到顶部
     if (scrollRef.current) {
       scrollRef.current.scrollTop = 0;
       scrollRef.current.scrollLeft = 0;
@@ -206,7 +216,7 @@ export function PDFViewer({
 
   const handleZoom = useCallback((delta: number) => {
     setScale(s => {
-      const newScale = Math.max(0.5, Math.min(3, s + delta));
+      const newScale = Math.max(0.5, Math.min(4, s + delta));
       return Math.round(newScale * 10) / 10;
     });
   }, []);
@@ -314,13 +324,13 @@ export function PDFViewer({
     toast.success('批注已删除');
   }, [onDeleteAnnotation]);
 
-  // 优化的触摸处理
+  // 优化的触摸处理 - 全屏模式下优化
   const onTouchStart = (e: React.TouchEvent) => {
     // 全屏时触摸显示控制栏
     if (isFullscreen) {
       setShowFullscreenControls(true);
       if (fullscreenTimer.current) clearTimeout(fullscreenTimer.current);
-      fullscreenTimer.current = setTimeout(() => setShowFullscreenControls(false), 3000);
+      fullscreenTimer.current = setTimeout(() => setShowFullscreenControls(false), 4000);
     }
 
     if (e.touches.length === 2) {
@@ -333,10 +343,13 @@ export function PDFViewer({
       lastPinchDistance.current = dist;
       pinchStartScale.current = scale;
     } else if (e.touches.length === 1) {
+      // 记录是否从顶部边缘开始（用于退出全屏判定）
+      const isTopEdge = e.touches[0].clientY < 50;
       touchStart.current = { 
         x: e.touches[0].clientX, 
         y: e.touches[0].clientY,
-        time: Date.now()
+        time: Date.now(),
+        isTopEdge
       };
     }
   };
@@ -348,16 +361,19 @@ export function PDFViewer({
         e.touches[0].pageX - e.touches[1].pageX,
         e.touches[0].pageY - e.touches[1].pageY
       );
-      const delta = (dist - lastPinchDistance.current) / 100;
-      if (Math.abs(delta) > 0.02) {
-        const newScale = Math.max(0.5, Math.min(3, scale + delta));
-        setScale(Math.round(newScale * 10) / 10);
-        lastPinchDistance.current = dist;
-      }
+      // 更平滑的缩放
+      const scaleFactor = dist / touchStartDist.current;
+      const newScale = Math.max(0.5, Math.min(4, pinchStartScale.current * scaleFactor));
+      setScale(Math.round(newScale * 10) / 10);
     }
   };
 
   const onTouchEnd = (e: React.TouchEvent) => {
+    if (e.touches.length === 1 && isPinching) {
+      // 从双指变为单指，继续 pinch 状态但准备结束
+      return;
+    }
+    
     if (e.touches.length === 0 && isPinching) {
       setIsPinching(false);
       return;
@@ -374,17 +390,17 @@ export function PDFViewer({
     const dt = Date.now() - touchStart.current.time;
     const now = Date.now();
     
-    // 双击检测
+    // 双击缩放（全屏和非全屏都支持）
     if (lastTap.current && 
         now - lastTap.current.time < 300 && 
         Math.abs(touch.clientX - lastTap.current.x) < 10 &&
         Math.abs(touch.clientY - lastTap.current.y) < 10) {
-      if (scale !== 1.0) {
+      if (scale > 1.5) {
         resetZoom();
         toast.success('重置缩放');
       } else {
-        setScale(1.8);
-        toast.success('放大');
+        setScale(2.5);
+        toast.success('放大至 250%');
       }
       lastTap.current = null;
       touchStart.current = null;
@@ -393,14 +409,19 @@ export function PDFViewer({
     
     lastTap.current = { time: now, x: touch.clientX, y: touch.clientY };
     
-    // 下滑退出全屏
-    if (isFullscreen && dy < -50 && Math.abs(dy) > Math.abs(dx) && dt < 300) {
+    // 全屏退出判定：必须从顶部边缘(50px内)开始，且向下滑动超过150px，速度要快
+    if (isFullscreen && 
+        touchStart.current.isTopEdge && 
+        dy < -150 && 
+        Math.abs(dy) > Math.abs(dx) && 
+        dt < 400) {
       toggleFullscreen();
+      toast.success('退出全屏');
       return;
     }
     
-    // 滑动翻页
-    if (Math.abs(dx) > Math.abs(dy) && Math.abs(dx) > 50 && dt < 300) {
+    // 滑动翻页（非缩放状态下）
+    if (!isPinching && Math.abs(dx) > Math.abs(dy) && Math.abs(dx) > 80 && dt < 300) {
       if (dx > 0) goToNext();
       else goToPrev();
     }
@@ -434,6 +455,19 @@ export function PDFViewer({
           e.preventDefault();
           goToPage(numPages);
           break;
+        case '+':
+        case '=':
+          e.preventDefault();
+          handleZoom(0.2);
+          break;
+        case '-':
+          e.preventDefault();
+          handleZoom(-0.2);
+          break;
+        case '0':
+          e.preventDefault();
+          resetZoom();
+          break;
         case 'Escape':
           if (document.fullscreenElement) {
             document.exitFullscreen();
@@ -446,7 +480,7 @@ export function PDFViewer({
     
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [goToNext, goToPrev, goToPage, numPages, onClose]);
+  }, [goToNext, goToPrev, goToPage, numPages, onClose, handleZoom]);
 
   const currentAnnotations = useMemo(() => 
     annotations.filter(a => a.page === pageNumber),
@@ -621,7 +655,7 @@ export function PDFViewer({
       )}
 
       <div className="flex-1 flex flex-col relative h-full w-full min-w-0">
-        {/* 顶部导航 - 全屏时隐藏，但显示悬浮按钮 */}
+        {/* 顶部导航 - 全屏时隐藏 */}
         {!isFullscreen && (
           <div className="h-14 border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60 flex items-center justify-between px-4 shrink-0 z-20">
             <div className="flex items-center gap-2">
@@ -662,7 +696,7 @@ export function PDFViewer({
                 </div>
               )}
               <Button variant="ghost" size="icon" className="h-8 w-8" onClick={toggleFullscreen}>
-                {isFullscreen ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}
+                <Maximize2 className="h-4 w-4" />
               </Button>
               <Sheet>
                 <SheetTrigger asChild>
@@ -698,33 +732,52 @@ export function PDFViewer({
           </div>
         )}
 
-        {/* 全屏悬浮控制栏 */}
+        {/* 全屏悬浮控制栏 - 始终可交互 */}
         {isFullscreen && (
           <div className={cn(
-            "absolute top-4 left-1/2 -translate-x-1/2 z-50 flex items-center gap-2 bg-black/80 text-white backdrop-blur-md rounded-full px-4 py-2 transition-opacity duration-300",
-            showFullscreenControls ? "opacity-100" : "opacity-0 pointer-events-none"
+            "absolute top-0 left-0 right-0 z-50 bg-gradient-to-b from-black/80 to-transparent pb-12 pt-4 px-4 transition-all duration-300",
+            showFullscreenControls ? "opacity-100 translate-y-0" : "opacity-0 -translate-y-full pointer-events-none"
           )}>
-            <Button variant="ghost" size="icon" className="h-8 w-8 text-white hover:bg-white/20" onClick={goToPrev}>
-              <ChevronLeft className="h-5 w-5" />
-            </Button>
-            <span className="text-sm font-medium tabular-nums min-w-[80px] text-center">
-              {pageNumber} / {numPages}
-            </span>
-            <Button variant="ghost" size="icon" className="h-8 w-8 text-white hover:bg-white/20" onClick={goToNext}>
-              <ChevronRight className="h-5 w-5" />
-            </Button>
-            <div className="w-px h-4 bg-white/30 mx-1" />
-            <Button variant="ghost" size="icon" className="h-8 w-8 text-white hover:bg-white/20" onClick={() => handleZoom(-0.2)}>
-              <ZoomOut className="h-4 w-4" />
-            </Button>
-            <span className="text-xs w-10 text-center">{Math.round(scale * 100)}%</span>
-            <Button variant="ghost" size="icon" className="h-8 w-8 text-white hover:bg-white/20" onClick={() => handleZoom(0.2)}>
-              <ZoomIn className="h-4 w-4" />
-            </Button>
-            <div className="w-px h-4 bg-white/30 mx-1" />
-            <Button variant="ghost" size="icon" className="h-8 w-8 text-white hover:bg-white/20" onClick={toggleFullscreen}>
-              <Minimize2 className="h-4 w-4" />
-            </Button>
+            <div className="flex items-center justify-between max-w-3xl mx-auto">
+              <div className="flex items-center gap-2 bg-black/50 backdrop-blur-md rounded-full px-4 py-2 text-white">
+                <Button variant="ghost" size="icon" className="h-8 w-8 text-white hover:bg-white/20" onClick={goToPrev}>
+                  <ChevronLeft className="h-5 w-5" />
+                </Button>
+                <span className="text-sm font-medium tabular-nums min-w-[80px] text-center">
+                  {pageNumber} / {numPages}
+                </span>
+                <Button variant="ghost" size="icon" className="h-8 w-8 text-white hover:bg-white/20" onClick={goToNext}>
+                  <ChevronRight className="h-5 w-5" />
+                </Button>
+              </div>
+
+              <div className="flex items-center gap-2 bg-black/50 backdrop-blur-md rounded-full px-3 py-2 text-white">
+                <Button variant="ghost" size="icon" className="h-8 w-8 text-white hover:bg-white/20" onClick={() => handleZoom(-0.2)}>
+                  <ZoomOut className="h-4 w-4" />
+                </Button>
+                <span className="text-xs w-12 text-center font-mono">{Math.round(scale * 100)}%</span>
+                <Button variant="ghost" size="icon" className="h-8 w-8 text-white hover:bg-white/20" onClick={() => handleZoom(0.2)}>
+                  <ZoomIn className="h-4 w-4" />
+                </Button>
+                <div className="w-px h-4 bg-white/30 mx-1" />
+                <Button variant="ghost" size="icon" className="h-8 w-8 text-white hover:bg-white/20" onClick={toggleFullscreen}>
+                  <Minimize2 className="h-4 w-4" />
+                </Button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* 全屏模式底部提示 */}
+        {isFullscreen && showFullscreenHint && (
+          <div className="absolute bottom-8 left-1/2 -translate-x-1/2 z-40 bg-black/70 backdrop-blur-md text-white px-6 py-3 rounded-full text-sm animate-in fade-in slide-in-from-bottom-4">
+            <div className="flex items-center gap-3">
+              <Info className="h-4 w-4" />
+              <span>双击放大 · 双指缩放 · 顶部下滑退出</span>
+              <button onClick={() => setShowFullscreenHint(false)} className="ml-2 hover:bg-white/20 rounded-full p-1">
+                <X className="h-3 w-3" />
+              </button>
+            </div>
           </div>
         )}
 
@@ -766,7 +819,7 @@ export function PDFViewer({
           </div>
         )}
 
-        {/* PDF 内容区域 - 关键修复：确保完美居中 */}
+        {/* PDF 内容区域 */}
         <div 
           ref={scrollRef}
           className={cn(
@@ -779,7 +832,6 @@ export function PDFViewer({
           onMouseUp={handleTextSelection}
           onClick={() => isFullscreen && setShowFullscreenControls(true)}
         >
-          {/* 居中容器 */}
           <div className="min-h-full w-full flex items-center justify-center p-4 md:p-8">
             {loadError ? (
               <div className="flex flex-col items-center justify-center text-muted-foreground p-8">
@@ -835,7 +887,6 @@ export function PDFViewer({
                   
                   {renderHighlights(pageNumber)}
                   
-                  {/* 笔记标记 */}
                   {currentAnnotations.filter(a => a.type === 'note').map(ann => {
                     if (ann.x === undefined || ann.y === undefined) return null;
                     return (
@@ -969,19 +1020,15 @@ export function PDFViewer({
                   <div className="space-y-2">
                     <Button variant="outline" className="w-full justify-start" onClick={resetZoom}>
                       <Undo2 className="h-4 w-4 mr-2" />
-                      重置缩放 ({isMobile ? '100%' : '120%'})
-                    </Button>
-                    <Button variant="outline" className="w-full justify-start" onClick={() => setRotation(r => (r + 90) % 360)}>
-                      <RotateCw className="h-4 w-4 mr-2" />
-                      旋转页面
+                      重置缩放 (100%)
                     </Button>
                     <Button variant="outline" className="w-full justify-start" onClick={toggleFullscreen}>
                       <Maximize2 className="h-4 w-4 mr-2" />
-                      进入全屏
+                      进入全屏阅读
                     </Button>
                   </div>
 
-                  <ScrollArea className="h-[calc(100%-280px)] mt-4">
+                  <ScrollArea className="h-[calc(100%-240px)] mt-4">
                     <h4 className="text-sm font-medium mb-3 text-muted-foreground">批注列表</h4>
                     {annotations.length === 0 ? (
                       <div className="text-center text-muted-foreground py-8 text-sm">
@@ -1020,7 +1067,7 @@ export function PDFViewer({
                   <BookOpen className="h-8 w-8 text-primary" />
                 </div>
                 <h3 className="text-lg font-semibold">阅读手势</h3>
-                <p className="text-sm text-muted-foreground mt-1">掌握这些技巧，阅读更流畅</p>
+                <p className="text-sm text-muted-foreground mt-1">专为文献阅读优化</p>
               </div>
               
               <div className="space-y-3 text-sm">
@@ -1035,21 +1082,14 @@ export function PDFViewer({
                   <div className="w-10 h-10 bg-background rounded-full flex items-center justify-center shrink-0 border text-lg">👐</div>
                   <div>
                     <p className="font-medium">双指捏合</p>
-                    <p className="text-xs text-muted-foreground">放大或缩小</p>
+                    <p className="text-xs text-muted-foreground">精确缩放文献</p>
                   </div>
                 </div>
                 <div className="flex items-center gap-3 p-3 bg-muted rounded-lg">
                   <div className="w-10 h-10 bg-background rounded-full flex items-center justify-center shrink-0 border text-lg">👆👆</div>
                   <div>
                     <p className="font-medium">双击页面</p>
-                    <p className="text-xs text-muted-foreground">快速放大/还原</p>
-                  </div>
-                </div>
-                <div className="flex items-center gap-3 p-3 bg-muted rounded-lg">
-                  <div className="w-10 h-10 bg-background rounded-full flex items-center justify-center shrink-0 border text-lg">👇</div>
-                  <div>
-                    <p className="font-medium">全屏时下拉</p>
-                    <p className="text-xs text-muted-foreground">退出全屏模式</p>
+                    <p className="text-xs text-muted-foreground">快速放大/重置</p>
                   </div>
                 </div>
               </div>
