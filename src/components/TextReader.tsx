@@ -27,10 +27,12 @@ interface ReaderSettings {
 }
 
 interface TextReaderProps {
-  content: string;
+  content: string;  // 传入的文本（可以是乱码，组件会尝试自动修复）
   title: string;
   bookId: string;
   onClose: () => void;
+  // 可选：如果传入原始二进制数据，可以更准确地检测编码
+  rawBuffer?: ArrayBuffer;
 }
 
 // ============================== 配置 ==============================
@@ -50,83 +52,132 @@ const THEMES = [
   { name: '羊皮纸', bg: '#f5f0e6', text: '#5c4b37', accent: '#8b6914', border: '#e5ddd0', secondaryBg: '#efe8db' },
 ];
 
-// ============================== 编码修复工具函数 ==============================
+// ============================== 编码检测与修复工具函数 ==============================
 
 /**
- * 尝试修复 UTF-8 被错误解码为 Latin-1 的情况
- * 例如：å®�é™� 应该是 "实践"
+ * 自动检测并解码二进制数据
+ * 支持：UTF-8(with/without BOM), GB2312, GBK, GB18030, UTF-16LE/BE
  */
-const tryFixUtf8AsLatin1 = (text: string): string => {
+const detectAndDecode = (buffer: ArrayBuffer): string => {
+  const bytes = new Uint8Array(buffer);
+  
+  // 1. 检测 BOM (Byte Order Mark)
+  if (bytes.length >= 3 && bytes[0] === 0xEF && bytes[1] === 0xBB && bytes[2] === 0xBF) {
+    // UTF-8 BOM
+    return new TextDecoder('utf-8').decode(bytes.slice(3));
+  }
+  if (bytes.length >= 2 && bytes[0] === 0xFF && bytes[1] === 0xFE) {
+    // UTF-16 LE BOM
+    return new TextDecoder('utf-16le').decode(bytes.slice(2));
+  }
+  if (bytes.length >= 2 && bytes[0] === 0xFE && bytes[1] === 0xFF) {
+    // UTF-16 BE BOM
+    return new TextDecoder('utf-16be').decode(bytes.slice(2));
+  }
+  
+  // 2. 尝试 UTF-8 解码并验证
   try {
-    const bytes = new Uint8Array(text.length);
-    for (let i = 0; i < text.length; i++) {
-      bytes[i] = text.charCodeAt(i) & 0xFF;
-    }
-    const decoder = new TextDecoder('utf-8', { fatal: false });
-    const decoded = decoder.decode(bytes);
+    const utf8Decoder = new TextDecoder('utf-8', { fatal: true });
+    const utf8Text = utf8Decoder.decode(bytes);
     
-    // 如果修复后没有乱码字符，说明修复成功
-    if (!decoded.includes('�') && decoded !== text) {
-      return decoded;
+    // 检查解码后的合理性：UTF-8 解码如果产生大量 � 或特定乱码模式，可能是 GBK
+    const replacementChars = (utf8Text.match(/�/g) || []).length;
+    const suspiciousPattern = /[ʵϰгҵģʽһʮ��]+/;
+    
+    // 如果替换字符少于 0.1% 且没有可疑模式，认为是正确的 UTF-8
+    if (replacementChars < utf8Text.length * 0.001 && !suspiciousPattern.test(utf8Text)) {
+      return utf8Text;
     }
-    return text;
   } catch {
-    return text;
+    // fatal: true 会抛出异常，说明肯定不是 UTF-8
   }
+  
+  // 3. 尝试 GB18030 (兼容 GB2312/GBK)
+  try {
+    const gbDecoder = new TextDecoder('gb18030', { fatal: false });
+    const gbText = gbDecoder.decode(bytes);
+    
+    // 验证 GB18030 解码结果：不应该有太多 �
+    const invalidChars = (gbText.match(/�/g) || []).length;
+    if (invalidChars < gbText.length * 0.01) {
+      return gbText;
+    }
+  } catch {
+    // 浏览器不支持 gb18030，继续尝试其他方法
+  }
+  
+  // 4. 回退：使用非致命 UTF-8 解码
+  return new TextDecoder('utf-8', { fatal: false }).decode(bytes);
 };
 
 /**
- * 尝试修复 GBK 被错误解码为 UTF-8 的情况
+ * 尝试修复 GBK 被错误解码为 UTF-8 的文本（Latin1 中转法）
+ * 用于处理已经变成乱码字符串的文本（而非原始 ArrayBuffer）
  */
-const tryFixGbkAsUtf8 = (text: string): string => {
+const tryFixGbkEncoding = (text: string): string => {
   try {
-    // 如果包含大量�，可能是 GBK 文件被当作 UTF-8 读取
-    if ((text.match(/�/g) || []).length > text.length * 0.1) {
-      // 使用 escape/unescape 技巧（仅适用于浏览器环境）
-      // 注意：这个方法在现代浏览器可能有兼容性问题，仅作为尝试
+    // 检测 GBK 乱码特征
+    const garbledPattern = /[ʵϰгҵģʽһʮ·����]+/;
+    const highByteRatio = (text.match(/[\x80-\xff]/g) || []).length / Math.max(text.length, 1);
+    
+    if (garbledPattern.test(text) || highByteRatio > 0.3) {
+      console.log('检测到 GBK 编码特征，尝试重新解码...');
+      
+      // 将乱码字符串转回字节流（按 Latin1 编码，每个字符取低 8 位）
+      const bytes = new Uint8Array(text.length);
+      for (let i = 0; i < text.length; i++) {
+        bytes[i] = text.charCodeAt(i) & 0xFF;
+      }
+      
+      // 尝试 GB18030 解码
       try {
-        const fixed = decodeURIComponent(escape(text));
-        if (!fixed.includes('�')) return fixed;
-      } catch {}
+        const decoder = new TextDecoder('gb18030', { fatal: false });
+        const decoded = decoder.decode(bytes);
+        const stillGarbled = (decoded.match(/[ʵϰгҵģʽһʮ·�]/g) || []).length;
+        
+        if (stillGarbled < decoded.length * 0.05) {
+          console.log('GBK 解码成功');
+          return decoded;
+        }
+      } catch (e) {
+        console.warn('浏览器不支持 GB18030 解码，使用备用方案');
+      }
     }
-    return text;
-  } catch {
-    return text;
+  } catch (e) {
+    console.error('编码修复失败:', e);
   }
+  return text;
 };
 
+/**
+ * 清理文本内容
+ */
 const cleanContent = (text: string): string => {
   if (!text) return '';
   
   let cleaned = text;
   
-  // 1. 如果包含大量替换字符，尝试编码修复
-  const replacementCount = (cleaned.match(/�/g) || []).length;
-  if (replacementCount > 10 || cleaned.includes('��')) {
-    console.log('检测到乱码，尝试修复编码...');
-    cleaned = tryFixUtf8AsLatin1(cleaned);
-    cleaned = tryFixGbkAsUtf8(cleaned);
-  }
+  // 1. 尝试修复 GBK 乱码（如果文本已经乱码）
+  cleaned = tryFixGbkEncoding(cleaned);
   
-  // 2. 移除 BOM 头
+  // 2. 移除各种 BOM 头
   cleaned = cleaned.replace(/^\uFEFF|^\uFFFE|^\u0000\uFEFF|^\uFEFF\u0000|^\uFFFE\u0000|^\u0000\uFFFE/g, '');
   
-  // 3. 替换换行符
+  // 3. 统一换行符
   cleaned = cleaned.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
   
   // 4. 移除行尾空格
   cleaned = cleaned.replace(/[ \t]+$/gm, '');
   
-  // 5. 移除控制字符（保留换行(10)和制表符(9)）
+  // 5. 移除控制字符（保留 \n(10) 和 \t(9)）
   const controlChars = [
     '\x00', '\x01', '\x02', '\x03', '\x04', '\x05', '\x06', '\x07', '\x08',
     '\x0b', '\x0c', '\x0e', '\x0f', '\x10', '\x11', '\x12', '\x13', '\x14',
-    '\x15', '\x16', '\x17', '\x18', '\x19', '\x1a', '\x1b', '\x1c', '\x1d',
-    '\x1e', '\x1f', '\x7f', '\x80', '\x81', '\x82', '\x83', '\x84', '\x85',
-    '\x86', '\x87', '\x88', '\x89', '\x8a', '\x8b', '\x8c', '\x8d', '\x8e', '\x8f',
-    '\x90', '\x91', '\x92', '\x93', '\x94', '\x95', '\x96', '\x97', '\x98', '\x99',
-    '\x9a', '\x9b', '\x9c', '\x9d', '\x9e', '\x9f',
-    '\u200b', '\u200c', '\u200d', '\u200e', '\u200f',
+    '\x15', '\x16', '\x17', '\x18', '\x19', '\x0b', '\x1c', '\x1d', '\x1e', '\x1f',
+    '\x7f', '\x80', '\x81', '\x82', '\x83', '\x84', '\x85', '\x86', '\x87', '\x88',
+    '\x89', '\x8a', '\x8b', '\x8c', '\x8d', '\x8e', '\x8f', '\x90', '\x91', '\x92',
+    '\x93', '\x94', '\x95', '\x96', '\x97', '\x98', '\x99', '\x9a', '\x9b', '\x9c',
+    '\x9d', '\x9e', '\x9f', '\u200b', '\u200c', '\u200d', '\u200e', '\u200f',
     '\u2028', '\u2029', '\ufeff'
   ];
   
@@ -134,32 +185,17 @@ const cleanContent = (text: string): string => {
     cleaned = cleaned.split(char).join('');
   });
   
-  // 6. 修复常见乱码映射（使用数组避免对象重复键）
+  // 6. 修复常见乱码字符映射
   const charReplacements: Array<[string, string]> = [
-    ['â€œ', '"'], ['â€', '"'], ['â€™', "'"], ['â€˜', "'"], ['â€¦', '…'],
-    ['â€"', '—'], ['â€"', '–'], ['Â ', ' '], ['Â¡', '¡'], ['Â¢', '¢'],
-    ['Â£', '£'], ['Â¤', '¤'], ['Â¥', '¥'], ['Â©', '©'], ['Â®', '®'],
-    ['Â°', '°'], ['Â·', '·'], ['Â½', '½'], ['Â¼', '¼'], ['Â¾', '¾'],
-    ['Ã€', 'À'], ['Ã‚', 'Â'], ['Ãƒ', 'Ã'], ['Ã„', 'Ä'], ['Ã…', 'Å'],
-    ['Ã†', 'Æ'], ['Ã‡', 'Ç'], ['Ãˆ', 'È'], ['Ã‰', 'É'], ['ÃŠ', 'Ê'],
-    ['Ã‹', 'Ë'], ['ÃŒ', 'Ì'], ['ÃŽ', 'Î'], ['Ã', 'Á'], ['Ã', 'Í'],
-    ['Ã', 'Ï'], ['Ã', 'Ð'], ['Ã', 'Ñ'], ['Ã', 'Ò'], ['Ã"', 'Ó'],
-    ['Ã"', 'Ô'], ['Ã•', 'Õ'], ['Ã–', 'Ö'], ['Ã—', '×'], ['Ã˜', 'Ø'],
-    ['Ã™', 'Ù'], ['Ãš', 'Ú'], ['Ã›', 'Û'], ['Ãœ', 'Ü'], ['Ã', 'Ý'],
-    ['Ãž', 'Þ'], ['ÃŸ', 'ß'], ['Ã ', 'à'], ['Ã¡', 'á'], ['Ã¢', 'â'],
-    ['Ã£', 'ã'], ['Ã¤', 'ä'], ['Ã¥', 'å'], ['Ã¦', 'æ'], ['Ã§', 'ç'],
-    ['Ã¨', 'è'], ['Ã©', 'é'], ['Ãª', 'ê'], ['Ã«', 'ë'], ['Ã¬', 'ì'],
-    ['Ã\xad', 'í'], ['Ã®', 'î'], ['Ã¯', 'ï'], ['Ã°', 'ð'], ['Ã±', 'ñ'],
-    ['Ã²', 'ò'], ['Ã³', 'ó'], ['Ã´', 'ô'], ['Ãµ', 'õ'], ['Ã¶', 'ö'],
-    ['Ã·', '÷'], ['Ã¸', 'ø'], ['Ã¹', 'ù'], ['Ãº', 'ú'], ['Ã»', 'û'],
-    ['Ã¼', 'ü'], ['Ã½', 'ý'], ['Ã¾', 'þ'], ['Ã¿', 'ÿ'],
+    ['â€œ', '"'], ['â€', '"'], ['â€™', "'"], ['â€˜', "'"], 
+    ['â€¦', '…'], ['â€"', '—'], ['â€"', '–'], ['Â ', ' '],
   ];
   
   charReplacements.forEach(([bad, good]) => {
     cleaned = cleaned.split(bad).join(good);
   });
   
-  // 7. 移除连续多个空行
+  // 7. 合并连续空行
   cleaned = cleaned.replace(/\n{3,}/g, '\n\n');
   
   // 8. 清理首尾
@@ -168,33 +204,9 @@ const cleanContent = (text: string): string => {
   return cleaned;
 };
 
-// 检查是否可能是乱码
-const detectGarbledText = (text: string): { isGarbled: boolean; confidence: number } => {
-  if (!text) return { isGarbled: false, confidence: 0 };
-  
-  const total = text.length;
-  const replacement = (text.match(/�/g) || []).length;
-  const highBytes = (text.match(/[\x80-\xFF]/g) || []).length;
-  
-  // 如果替换字符超过5%，肯定是乱码
-  if (replacement / total > 0.05) {
-    return { isGarbled: true, confidence: 1 };
-  }
-  
-  // 如果高字节字符超过30%，可能是 Latin-1 编码的 UTF-8
-  if (highBytes / total > 0.3) {
-    return { isGarbled: true, confidence: 0.7 };
-  }
-  
-  // 检测其他乱码模式
-  const garbledPatterns = /Ã[\x80-\xbf]|â€œ|â€|â€˜|â€™|â€¦/;
-  if (garbledPatterns.test(text)) {
-    return { isGarbled: true, confidence: 0.8 };
-  }
-  
-  return { isGarbled: false, confidence: 0 };
-};
-
+/**
+ * 解析文本为结构化数据
+ */
 const parseAndFlatten = (text: string): FlattenedItem[] => {
   const lines = text.split('\n');
   const items: FlattenedItem[] = [];
@@ -237,6 +249,7 @@ const parseAndFlatten = (text: string): FlattenedItem[] => {
   return items.length > 0 ? items : [{ type: 'paragraph', content: text, chapterIndex: 0, globalIndex: 0 }];
 };
 
+// ============================== 存储工具 ==============================
 const storage = {
   loadSettings: (): ReaderSettings => {
     try {
@@ -274,21 +287,24 @@ const storage = {
 };
 
 // ============================== 主组件 ==============================
-export const TextReader: React.FC<TextReaderProps> = ({ content, title, bookId, onClose }) => {
-  // 数据清洗和编码修复
+export const TextReader: React.FC<TextReaderProps> = ({ 
+  content, 
+  title, 
+  bookId, 
+  onClose,
+  rawBuffer  // 可选：传入原始二进制数据以获得更准确的编码检测
+}) => {
+  // 优先使用原始二进制数据解码，否则清理传入的文本
   const cleanedContent = useMemo(() => {
-    const cleaned = cleanContent(content);
-    const detection = detectGarbledText(cleaned);
-    
-    if (detection.isGarbled) {
-      console.warn(`检测到乱码文本（置信度: ${detection.confidence}），已尝试自动修复`);
-      // 如果修复后仍然有大量乱码，提示用户
-      if ((cleaned.match(/�/g) || []).length > 20) {
-        console.error('文本编码损坏严重，建议检查源文件编码格式（应为 UTF-8）');
-      }
+    if (rawBuffer) {
+      // 如果有原始二进制数据，进行准确的编码检测
+      const decoded = detectAndDecode(rawBuffer);
+      return cleanContent(decoded);
+    } else {
+      // 否则尝试清理已传入的文本（处理可能的 GBK 乱码）
+      return cleanContent(content);
     }
-    return cleaned;
-  }, [content]);
+  }, [content, rawBuffer]);
   
   const items = useMemo(() => parseAndFlatten(cleanedContent), [cleanedContent]);
   
@@ -299,7 +315,6 @@ export const TextReader: React.FC<TextReaderProps> = ({ content, title, bookId, 
   const [showChapters, setShowChapters] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [isReady, setIsReady] = useState(false);
-  const [encodingWarning, setEncodingWarning] = useState(false);
   
   const parentRef = useRef<HTMLDivElement>(null);
   const uiTimeoutRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
@@ -307,19 +322,8 @@ export const TextReader: React.FC<TextReaderProps> = ({ content, title, bookId, 
   const lastSavedIndexRef = useRef<number>(0);
   
   const theme = THEMES[settings.theme] || THEMES[0];
-  
-  // 检查编码问题
-  useEffect(() => {
-    const detection = detectGarbledText(cleanedContent);
-    if (detection.isGarbled && detection.confidence > 0.5) {
-      setEncodingWarning(true);
-      // 3秒后自动隐藏警告
-      const timer = setTimeout(() => setEncodingWarning(false), 5000);
-      return () => clearTimeout(timer);
-    }
-  }, [cleanedContent]);
 
-  // 动态计算预估高度
+  // 虚拟滚动配置
   const estimateSize = useCallback((index: number): number => {
     const item = items[index];
     if (!item) return settings.fontSize * settings.lineHeight;
@@ -334,7 +338,6 @@ export const TextReader: React.FC<TextReaderProps> = ({ content, title, bookId, 
     return Math.max(baseHeight, lines * baseHeight * settings.lineHeight);
   }, [settings.fontSize, settings.lineHeight, items]);
 
-  // 虚拟滚动配置
   const virtualizer = useVirtualizer({
     count: items.length,
     getScrollElement: () => parentRef.current,
@@ -587,20 +590,6 @@ export const TextReader: React.FC<TextReaderProps> = ({ content, title, bookId, 
         MozOsxFontSmoothing: 'grayscale',
       }}
     >
-      {/* 编码警告提示 */}
-      {encodingWarning && (
-        <div className="absolute top-16 left-1/2 -translate-x-1/2 z-[60] bg-red-500/90 text-white px-4 py-2 rounded-full text-sm shadow-lg backdrop-blur-sm animate-in fade-in slide-in-from-top-2">
-          <span className="font-medium">⚠️ 检测到文本编码异常</span>
-          <span className="ml-2 opacity-90">请确保文件以 UTF-8 编码保存</span>
-          <button 
-            onClick={() => setEncodingWarning(false)} 
-            className="ml-3 hover:opacity-70"
-          >
-            ✕
-          </button>
-        </div>
-      )}
-      
       {/* 加载遮罩 */}
       {!isReady && (
         <div className="absolute inset-0 z-50 flex items-center justify-center" style={{ backgroundColor: theme.bg }}>
@@ -1028,4 +1017,26 @@ export const TextReader: React.FC<TextReaderProps> = ({ content, title, bookId, 
       )}
     </div>
   );
+};
+
+// ============================== 辅助函数：文件读取（可选） ==============================
+
+/**
+ * 读取文件并自动检测编码（推荐在父组件中使用）
+ * @param file 用户选择的文件
+ * @returns 解码后的文本和原始 ArrayBuffer
+ */
+export const readFileWithEncoding = (file: File): Promise<{ text: string; buffer: ArrayBuffer }> => {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.readAsArrayBuffer(file);
+    
+    reader.onload = (e) => {
+      const buffer = e.target?.result as ArrayBuffer;
+      const text = detectAndDecode(buffer);
+      resolve({ text, buffer });
+    };
+    
+    reader.onerror = reject;
+  });
 };
