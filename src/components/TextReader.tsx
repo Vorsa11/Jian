@@ -113,91 +113,100 @@ const storage = {
     autoHideHeader: true,
   }),
   saveSettings: (s: ReaderSettings) => {
-    try { localStorage.setItem(`reader-settings-v2`, JSON.stringify(s)); } catch {}
+    try { localStorage.setItem(`reader-settings-v3`, JSON.stringify(s)); } catch {}
   },
   loadProgress: (bookId: string): number => {
     try {
-      const data = JSON.parse(localStorage.getItem(`reader-progress-v2-${bookId}`) || '{}');
-      return data.index || 0;
+      const data = JSON.parse(localStorage.getItem(`reader-progress-v3-${bookId}`) || '{}');
+      return typeof data.index === 'number' ? data.index : 0;
     } catch { return 0; }
   },
   saveProgress: (bookId: string, index: number) => {
-    try { localStorage.setItem(`reader-progress-v2-${bookId}`, JSON.stringify({ index, time: Date.now() })); } catch {}
+    try { 
+      localStorage.setItem(`reader-progress-v3-${bookId}`, JSON.stringify({ index, time: Date.now() })); 
+    } catch {}
   },
 };
 
 // ============================== 主组件 ==============================
 export const TextReader: React.FC<TextReaderProps> = ({ content, title, bookId, onClose }) => {
   const items = useMemo(() => parseAndFlatten(cleanContent(content)), [content]);
+  
   const [settings, setSettings] = useState<ReaderSettings>(storage.loadSettings());
   const [currentChapter, setCurrentChapter] = useState(0);
   const [showUI, setShowUI] = useState(true);
   const [showSettings, setShowSettings] = useState(false);
   const [showChapters, setShowChapters] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
-  const [isReady, setIsReady] = useState(false);
   
   const parentRef = useRef<HTMLDivElement>(null);
   const uiTimeoutRef = useRef<number>();
-  const lastSaveTime = useRef<number>(0);
+  const currentIndexRef = useRef<number>(0);
   
   const theme = THEMES[settings.theme] || THEMES[0];
   
-  // 虚拟滚动配置
+  // 虚拟滚动配置 - 优化性能
   const virtualizer = useVirtualizer({
     count: items.length,
     getScrollElement: () => parentRef.current,
     estimateSize: useCallback(() => {
-      // 更精确的预估：标题占2行，正文按字体大小估算
-      return settings.fontSize * settings.lineHeight * 1.8;
+      return settings.fontSize * settings.lineHeight * 1.5;
     }, [settings.fontSize, settings.lineHeight]),
-    overscan: 8, // 增加预渲染范围，减少白屏
+    overscan: 10,
+    measureElement: (element) => element.getBoundingClientRect().height,
   });
   
-  // 恢复进度 - 关键修复：确保虚拟滚动准备好后再跳转
+  // 恢复进度 - 确保跳转到精确位置
   useEffect(() => {
-    if (!isReady || items.length === 0) return;
+    if (items.length === 0) return;
     
     const savedIndex = storage.loadProgress(bookId);
-    if (savedIndex > 0 && savedIndex < items.length) {
-      // 使用 setTimeout 确保 DOM 已准备好
-      const timer = setTimeout(() => {
+    currentIndexRef.current = savedIndex;
+    
+    // 延迟执行确保虚拟滚动已准备好
+    const timer = setTimeout(() => {
+      if (savedIndex > 0 && savedIndex < items.length) {
         virtualizer.scrollToIndex(savedIndex, { align: 'start', behavior: 'auto' });
-        // 更新当前章节
         const item = items[savedIndex];
         if (item) setCurrentChapter(item.chapterIndex);
-      }, 100);
-      return () => clearTimeout(timer);
-    }
-  }, [isReady, items, bookId, virtualizer]);
-  
-  // 标记准备好（组件挂载后）
-  useEffect(() => {
-    const timer = setTimeout(() => setIsReady(true), 50);
+      }
+    }, 100);
+    
     return () => clearTimeout(timer);
-  }, []);
+  }, [items, bookId, virtualizer]);
   
-  // 实时保存进度（节流）
+  // 实时保存进度 - 使用 ref 避免闭包问题
   useEffect(() => {
     const [firstVisible] = virtualizer.getVirtualItems();
     if (!firstVisible) return;
     
-    const now = Date.now();
-    if (now - lastSaveTime.current < 500) return; // 500ms节流
-    
+    currentIndexRef.current = firstVisible.index;
     const item = items[firstVisible.index];
     if (item) {
       setCurrentChapter(item.chapterIndex);
       storage.saveProgress(bookId, firstVisible.index);
-      lastSaveTime.current = now;
     }
   }, [virtualizer.getVirtualItems()[0]?.index, items, bookId]);
   
+  // 页面关闭前强制保存
+  useEffect(() => {
+    const handleBeforeUnload = () => {
+      storage.saveProgress(bookId, currentIndexRef.current);
+    };
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => {
+      window.removeEventListener('beforeunload', handleBeforeUnload);
+      handleBeforeUnload(); // 组件卸载时也保存
+    };
+  }, [bookId]);
+  
   // UI自动隐藏
   useEffect(() => {
-    if (!settings.autoHideHeader || showSettings || showChapters) return;
+    if (!settings.autoHideHeader || showSettings || showChapters) {
+      clearTimeout(uiTimeoutRef.current);
+      return;
+    }
     
-    clearTimeout(uiTimeoutRef.current);
     uiTimeoutRef.current = window.setTimeout(() => {
       setShowUI(false);
     }, 4000);
@@ -212,6 +221,28 @@ export const TextReader: React.FC<TextReaderProps> = ({ content, title, bookId, 
     return () => document.removeEventListener('fullscreenchange', handler);
   }, []);
   
+  // 键盘快捷键
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (showSettings || showChapters) return;
+      
+      if (e.key === 'ArrowLeft' || e.key === 'ArrowUp' || e.key === 'PageUp') {
+        e.preventDefault();
+        const scrollEl = parentRef.current;
+        if (scrollEl) scrollEl.scrollBy({ top: -window.innerHeight * 0.9, behavior: 'smooth' });
+      } else if (e.key === 'ArrowRight' || e.key === 'ArrowDown' || e.key === ' ' || e.key === 'PageDown') {
+        e.preventDefault();
+        const scrollEl = parentRef.current;
+        if (scrollEl) scrollEl.scrollBy({ top: window.innerHeight * 0.9, behavior: 'smooth' });
+      } else if (e.key === 'Escape') {
+        if (isFullscreen) document.exitFullscreen();
+      }
+    };
+    
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [showSettings, showChapters, isFullscreen]);
+  
   const toggleFullscreen = useCallback(async () => {
     try {
       if (!document.fullscreenElement) {
@@ -219,52 +250,66 @@ export const TextReader: React.FC<TextReaderProps> = ({ content, title, bookId, 
       } else {
         await document.exitFullscreen();
       }
-    } catch (e) {
-      console.log('Fullscreen error:', e);
-    }
+    } catch (e) {}
   }, []);
   
-  // 章节列表
+  // 章节列表 - 精确计算
   const chapters = useMemo(() => {
-    const chs: { index: number; title: string }[] = [];
+    const chs: { index: number; title: string; itemIndex: number }[] = [];
     items.forEach((item, idx) => {
       if (item.type === 'title') {
-        chs.push({ index: idx, title: item.content });
+        chs.push({ 
+          index: item.chapterIndex, 
+          title: item.content,
+          itemIndex: idx 
+        });
       }
     });
-    return chs.length > 0 ? chs : [{ index: 0, title: '全文' }];
+    return chs.length > 0 ? chs : [{ index: 0, title: '全文', itemIndex: 0 }];
   }, [items]);
   
+  // 章节跳转 - 精确跳转到章节开头
   const goToChapter = useCallback((chapterIdx: number) => {
-    const target = items.findIndex(i => i.chapterIndex === chapterIdx && i.type === 'title');
-    if (target !== -1) {
-      virtualizer.scrollToIndex(target, { align: 'start', behavior: 'smooth' });
+    // 找到该章节对应的 title item
+    const targetItem = items.find(i => i.chapterIndex === chapterIdx && i.type === 'title');
+    if (targetItem) {
+      virtualizer.scrollToIndex(targetItem.globalIndex, { align: 'start', behavior: 'smooth' });
+      setCurrentChapter(chapterIdx);
       setShowChapters(false);
       setShowUI(true);
+      currentIndexRef.current = targetItem.globalIndex;
+      storage.saveProgress(bookId, targetItem.globalIndex);
     }
-  }, [items, virtualizer]);
+  }, [items, virtualizer, bookId]);
+  
+  // 上一章/下一章
+  const prevChapter = useCallback(() => {
+    if (currentChapter > 0) {
+      goToChapter(currentChapter - 1);
+    }
+  }, [currentChapter, goToChapter]);
+  
+  const nextChapter = useCallback(() => {
+    if (currentChapter < chapters.length - 1) {
+      goToChapter(currentChapter + 1);
+    }
+  }, [currentChapter, chapters.length, goToChapter]);
   
   // 点击内容区域
   const handleContainerClick = useCallback((e: React.MouseEvent) => {
-    // 如果点击的是设置面板或目录面板内部，不处理
-    if ((e.target as HTMLElement).closest('.settings-panel') || 
-        (e.target as HTMLElement).closest('.chapters-panel')) return;
+    if ((e.target as HTMLElement).closest('.panel')) return;
     
     const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
     const x = e.clientX - rect.left;
     const width = rect.width;
     
-    // 左30%：上一屏，右30%：下一屏，中间40%：切换UI
-    if (x < width * 0.3) {
-      // 上一屏
+    if (x < width * 0.25) {
       const scrollEl = parentRef.current;
-      if (scrollEl) scrollEl.scrollBy({ top: -window.innerHeight * 0.85, behavior: 'smooth' });
-    } else if (x > width * 0.7) {
-      // 下一屏
+      if (scrollEl) scrollEl.scrollBy({ top: -window.innerHeight * 0.9, behavior: 'smooth' });
+    } else if (x > width * 0.75) {
       const scrollEl = parentRef.current;
-      if (scrollEl) scrollEl.scrollBy({ top: window.innerHeight * 0.85, behavior: 'smooth' });
+      if (scrollEl) scrollEl.scrollBy({ top: window.innerHeight * 0.9, behavior: 'smooth' });
     } else {
-      // 中间：切换UI
       if (!showSettings && !showChapters) {
         setShowUI(v => !v);
       }
@@ -275,7 +320,6 @@ export const TextReader: React.FC<TextReaderProps> = ({ content, title, bookId, 
     const newSettings = { ...settings, [key]: val };
     setSettings(newSettings);
     storage.saveSettings(newSettings);
-    // 重新测量
     setTimeout(() => virtualizer.measure(), 0);
   }, [settings, virtualizer]);
   
@@ -289,17 +333,18 @@ export const TextReader: React.FC<TextReaderProps> = ({ content, title, bookId, 
     return (
       <div 
         key={index} 
-        className={`px-6 ${isTitle ? 'pt-8 pb-4' : 'py-0'}`}
+        className={`px-6 ${isTitle ? 'pt-10 pb-6' : 'py-0'}`}
         style={{
-          fontSize: isTitle ? `${settings.fontSize * 1.3}px` : `${settings.fontSize}px`,
+          fontSize: isTitle ? `${settings.fontSize * 1.25}px` : `${settings.fontSize}px`,
           fontFamily: settings.fontFamily,
-          lineHeight: isTitle ? 1.4 : settings.lineHeight,
+          lineHeight: isTitle ? 1.3 : settings.lineHeight,
           letterSpacing: `${settings.letterSpacing}px`,
           textAlign: isTitle ? 'center' : settings.textAlign,
           color: isTitle ? theme.accent : theme.text,
           fontWeight: isTitle ? '700' : '400',
-          marginBottom: isTitle ? '1.5em' : `${settings.paragraphSpacing}em`,
+          marginBottom: isTitle ? '2rem' : `${settings.paragraphSpacing}em`,
           textIndent: !isTitle && settings.textAlign !== 'center' ? '2em' : '0',
+          scrollMarginTop: isTitle ? '20px' : '0',
         }}
       >
         {item.content}
@@ -309,22 +354,25 @@ export const TextReader: React.FC<TextReaderProps> = ({ content, title, bookId, 
   
   // 计算当前总进度
   const currentProgress = useMemo(() => {
-    const [firstVisible] = virtualizer.getVirtualItems();
-    if (!firstVisible || items.length === 0) return 0;
-    return Math.min(100, Math.round((firstVisible.index / items.length) * 100));
-  }, [virtualizer.getVirtualItems()[0]?.index, items.length]);
+    const scrollOffset = virtualizer.scrollOffset || 0;
+    const totalSize = virtualizer.getTotalSize();
+    if (totalSize === 0) return 0;
+    return Math.min(100, Math.round((scrollOffset / (totalSize - (parentRef.current?.clientHeight || 0))) * 100));
+  }, [virtualizer.scrollOffset, virtualizer.getTotalSize()]);
+  
+  if (!items.length) return null;
   
   return (
-    <div className="fixed inset-0 z-50 flex flex-col overflow-hidden bg-white" style={{ backgroundColor: theme.bg }}>
-      {/* 顶部栏 - 玻璃拟态优化 */}
+    <div className="fixed inset-0 z-50 flex flex-col overflow-hidden select-none" style={{ backgroundColor: theme.bg }}>
+      {/* 顶部栏 */}
       <header 
         className={`absolute top-0 left-0 right-0 z-40 transition-all duration-500 ease-out ${
           showUI ? 'opacity-100 translate-y-0' : 'opacity-0 -translate-y-full pointer-events-none'
         }`}
         style={{ 
-          backgroundColor: `${theme.bg}ee`, 
-          backdropFilter: 'saturate(180%) blur(20px)',
-          WebkitBackdropFilter: 'saturate(180%) blur(20px)',
+          backgroundColor: `${theme.bg}f5`, 
+          backdropFilter: 'blur(20px) saturate(180%)',
+          WebkitBackdropFilter: 'blur(20px) saturate(180%)',
           borderBottom: `1px solid ${theme.border}`,
         }}
       >
@@ -339,10 +387,10 @@ export const TextReader: React.FC<TextReaderProps> = ({ content, title, bookId, 
           </button>
           
           <div className="flex-1 text-center px-4">
-            <h1 className="text-[15px] font-semibold truncate" style={{ color: theme.text }}>
+            <h1 className="text-[15px] font-semibold truncate tracking-tight" style={{ color: theme.text }}>
               {title}
             </h1>
-            <p className="text-[11px] truncate opacity-50 font-medium tracking-wide" style={{ color: theme.text }}>
+            <p className="text-[11px] truncate opacity-50 font-medium mt-0.5" style={{ color: theme.text }}>
               {chapters[currentChapter]?.title || ''}
             </p>
           </div>
@@ -386,10 +434,7 @@ export const TextReader: React.FC<TextReaderProps> = ({ content, title, bookId, 
       <div 
         ref={parentRef}
         className="flex-1 overflow-auto relative w-full h-full"
-        style={{ 
-          WebkitOverflowScrolling: 'touch',
-          overflowY: 'scroll',
-        }}
+        style={{ WebkitOverflowScrolling: 'touch' }}
         onClick={handleContainerClick}
       >
         <div
@@ -397,8 +442,8 @@ export const TextReader: React.FC<TextReaderProps> = ({ content, title, bookId, 
             height: `${virtualizer.getTotalSize()}px`,
             width: '100%',
             position: 'relative',
-            paddingTop: showUI ? '56px' : '0',
-            paddingBottom: showUI ? '64px' : '0',
+            paddingTop: showUI ? '60px' : '20px',
+            paddingBottom: showUI ? '80px' : '40px',
             transition: 'padding 0.4s cubic-bezier(0.4, 0, 0.2, 1)',
           }}
         >
@@ -421,43 +466,40 @@ export const TextReader: React.FC<TextReaderProps> = ({ content, title, bookId, 
         </div>
       </div>
       
-      {/* 底部栏 - 优化交互 */}
+      {/* 底部栏 */}
       <footer 
         className={`absolute bottom-0 left-0 right-0 z-40 transition-all duration-500 ease-out ${
           showUI ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-full pointer-events-none'
         }`}
         style={{ 
-          backgroundColor: `${theme.bg}ee`, 
-          backdropFilter: 'saturate(180%) blur(20px)',
-          WebkitBackdropFilter: 'saturate(180%) blur(20px)',
+          backgroundColor: `${theme.bg}f5`, 
+          backdropFilter: 'blur(20px) saturate(180%)',
+          WebkitBackdropFilter: 'blur(20px) saturate(180%)',
           borderTop: `1px solid ${theme.border}`,
         }}
       >
         <div className="h-16 px-6 flex items-center gap-4 max-w-3xl mx-auto">
           <button 
-            onClick={() => {
-              const target = items.findIndex(i => i.chapterIndex === currentChapter - 1 && i.type === 'title');
-              if (target !== -1) virtualizer.scrollToIndex(target, { align: 'start', behavior: 'smooth' });
-            }}
+            onClick={prevChapter}
             disabled={currentChapter === 0}
-            className="text-[13px] font-semibold disabled:opacity-30 active:opacity-60 transition-opacity whitespace-nowrap"
+            className="text-[13px] font-semibold disabled:opacity-30 active:opacity-60 transition-opacity whitespace-nowrap min-w-[3em]"
             style={{ color: theme.text }}
           >
             上一章
           </button>
           
-          <div className="flex-1 flex flex-col gap-2 min-w-0">
-            <div className="flex justify-between text-[11px] font-medium opacity-40" style={{ color: theme.text }}>
-              <span>{currentProgress}%</span>
+          <div className="flex-1 flex flex-col gap-2 min-w-0 px-2">
+            <div className="flex justify-between text-[11px] font-medium opacity-40 px-1" style={{ color: theme.text }}>
+              <span>{Math.max(0, Math.min(100, currentProgress))}%</span>
               <span>{currentChapter + 1} / {chapters.length}</span>
             </div>
-            <div className="relative h-1.5 bg-gray-200/50 rounded-full overflow-hidden cursor-pointer group touch-none">
+            <div className="relative h-1.5 bg-gray-200/50 rounded-full overflow-hidden cursor-pointer touch-none">
               <div 
-                className="absolute left-0 top-0 h-full rounded-full transition-all duration-150 ease-out group-hover:opacity-100"
+                className="absolute left-0 top-0 h-full rounded-full transition-all duration-150"
                 style={{ 
-                  width: `${currentProgress}%`,
+                  width: `${Math.max(0, Math.min(100, currentProgress))}%`,
                   backgroundColor: theme.accent,
-                  opacity: 0.8,
+                  opacity: 0.9,
                 }}
               />
               <input 
@@ -465,9 +507,10 @@ export const TextReader: React.FC<TextReaderProps> = ({ content, title, bookId, 
                 min={0} 
                 max={items.length - 1} 
                 step={1}
-                value={virtualizer.getVirtualItems()[0]?.index || 0}
+                value={currentIndexRef.current}
                 onChange={(e) => {
                   const idx = parseInt(e.target.value);
+                  currentIndexRef.current = idx;
                   virtualizer.scrollToIndex(idx, { align: 'start', behavior: 'smooth' });
                 }}
                 className="absolute inset-0 w-full h-full opacity-0 cursor-pointer touch-none"
@@ -477,12 +520,9 @@ export const TextReader: React.FC<TextReaderProps> = ({ content, title, bookId, 
           </div>
           
           <button 
-            onClick={() => {
-              const target = items.findIndex(i => i.chapterIndex === currentChapter + 1 && i.type === 'title');
-              if (target !== -1) virtualizer.scrollToIndex(target, { align: 'start', behavior: 'smooth' });
-            }}
+            onClick={nextChapter}
             disabled={currentChapter >= chapters.length - 1}
-            className="text-[13px] font-semibold disabled:opacity-30 active:opacity-60 transition-opacity whitespace-nowrap"
+            className="text-[13px] font-semibold disabled:opacity-30 active:opacity-60 transition-opacity whitespace-nowrap min-w-[3em]"
             style={{ color: theme.text }}
           >
             下一章
@@ -490,21 +530,14 @@ export const TextReader: React.FC<TextReaderProps> = ({ content, title, bookId, 
         </div>
       </footer>
       
-      {/* 目录面板 - 修复层级 */}
+      {/* 目录面板 */}
       {showChapters && (
-        <>
+        <div className="absolute inset-0 z-50 flex">
           <div 
-            className="absolute inset-0 z-50 bg-black/20 backdrop-blur-[2px] transition-opacity" 
-            onClick={() => setShowChapters(false)}
-          />
-          <div 
-            className="absolute left-0 top-0 bottom-0 w-[min(320px,85vw)] z-50 shadow-2xl transform transition-transform duration-300 ease-out chapters-panel"
-            style={{ 
-              backgroundColor: theme.bg,
-              transform: showChapters ? 'translateX(0)' : 'translateX(-100%)',
-            }}
+            className="w-[min(320px,85vw)] h-full shadow-2xl panel flex flex-col"
+            style={{ backgroundColor: theme.bg }}
           >
-            <div className="p-4 border-b flex items-center justify-between sticky top-0 z-10" style={{ borderColor: theme.border, backgroundColor: theme.bg }}>
+            <div className="p-4 border-b flex items-center justify-between flex-none" style={{ borderColor: theme.border }}>
               <h2 className="font-bold text-lg" style={{ color: theme.text }}>目录</h2>
               <button 
                 onClick={() => setShowChapters(false)}
@@ -516,19 +549,19 @@ export const TextReader: React.FC<TextReaderProps> = ({ content, title, bookId, 
                 </svg>
               </button>
             </div>
-            <div className="overflow-y-auto h-[calc(100%-64px)] pb-safe">
-              {chapters.map((ch, idx) => (
+            <div className="flex-1 overflow-y-auto">
+              {chapters.map((ch) => (
                 <button
-                  key={idx}
-                  onClick={() => goToChapter(idx)}
+                  key={ch.index}
+                  onClick={() => goToChapter(ch.index)}
                   className={`w-full text-left px-6 py-4 border-b transition-all active:scale-[0.98] ${
-                    currentChapter === idx ? 'bg-blue-50/30' : 'hover:bg-black/[0.02]'
+                    currentChapter === ch.index ? 'bg-blue-50/40' : 'hover:bg-black/[0.02]'
                   }`}
                   style={{ borderColor: theme.border }}
                 >
                   <span 
-                    className={`text-[15px] block truncate ${currentChapter === idx ? 'font-semibold' : 'opacity-70'}`}
-                    style={{ color: currentChapter === idx ? theme.accent : theme.text }}
+                    className={`text-[15px] block truncate ${currentChapter === ch.index ? 'font-semibold' : 'opacity-70'}`}
+                    style={{ color: currentChapter === ch.index ? theme.accent : theme.text }}
                   >
                     {ch.title}
                   </span>
@@ -536,21 +569,19 @@ export const TextReader: React.FC<TextReaderProps> = ({ content, title, bookId, 
               ))}
             </div>
           </div>
-        </>
+          <div className="flex-1 bg-black/20 backdrop-blur-[2px]" onClick={() => setShowChapters(false)} />
+        </div>
       )}
       
-      {/* 设置面板 - 修复层级和点击 */}
+      {/* 设置面板 */}
       {showSettings && (
-        <>
+        <div className="absolute inset-0 z-50 flex justify-end">
+          <div className="flex-1 bg-black/20 backdrop-blur-[2px]" onClick={() => setShowSettings(false)} />
           <div 
-            className="absolute inset-0 z-50 bg-black/20 backdrop-blur-[2px] transition-opacity" 
-            onClick={() => setShowSettings(false)}
-          />
-          <div 
-            className="absolute right-0 top-0 bottom-0 w-[min(360px,90vw)] z-50 shadow-2xl overflow-hidden settings-panel"
+            className="w-[min(360px,90vw)] h-full shadow-2xl overflow-hidden panel flex flex-col"
             style={{ backgroundColor: theme.bg }}
           >
-            <div className="p-4 border-b flex items-center justify-between sticky top-0 z-10" style={{ borderColor: theme.border, backgroundColor: theme.bg }}>
+            <div className="p-4 border-b flex items-center justify-between flex-none" style={{ borderColor: theme.border }}>
               <h2 className="font-bold text-lg" style={{ color: theme.text }}>阅读设置</h2>
               <button 
                 onClick={() => setShowSettings(false)}
@@ -563,7 +594,7 @@ export const TextReader: React.FC<TextReaderProps> = ({ content, title, bookId, 
               </button>
             </div>
             
-            <div className="p-6 space-y-8 overflow-y-auto h-[calc(100%-64px)] pb-20">
+            <div className="flex-1 overflow-y-auto p-6 space-y-8">
               {/* 字体大小 */}
               <div className="space-y-3">
                 <div className="flex justify-between items-center">
@@ -573,17 +604,17 @@ export const TextReader: React.FC<TextReaderProps> = ({ content, title, bookId, 
                   </span>
                 </div>
                 <div className="flex items-center gap-3">
-                  <span className="text-xs opacity-50">A</span>
+                  <span className="text-xs opacity-50" style={{ color: theme.text }}>A</span>
                   <input 
                     type="range" 
                     min="14" 
                     max="24" 
                     value={settings.fontSize}
                     onChange={(e) => updateSetting('fontSize', parseInt(e.target.value))}
-                    className="flex-1 h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-blue-500"
+                    className="flex-1 h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer"
                     style={{ accentColor: theme.accent }}
                   />
-                  <span className="text-lg opacity-50">A</span>
+                  <span className="text-lg opacity-50" style={{ color: theme.text }}>A</span>
                 </div>
               </div>
               
@@ -591,7 +622,7 @@ export const TextReader: React.FC<TextReaderProps> = ({ content, title, bookId, 
               <div className="space-y-3">
                 <div className="flex justify-between items-center">
                   <span className="text-[15px] font-medium" style={{ color: theme.text }}>行间距</span>
-                  <span className="text-[13px] opacity-60">{settings.lineHeight}</span>
+                  <span className="text-[13px] opacity-60" style={{ color: theme.text }}>{settings.lineHeight}</span>
                 </div>
                 <input 
                   type="range" 
@@ -615,7 +646,7 @@ export const TextReader: React.FC<TextReaderProps> = ({ content, title, bookId, 
                       onClick={() => updateSetting('fontFamily', f.value)}
                       className={`px-3 py-3 text-[13px] rounded-xl border-2 transition-all active:scale-95 ${
                         settings.fontFamily === f.value 
-                          ? 'border-blue-500 bg-blue-50/30 text-blue-600 font-medium' 
+                          ? 'border-blue-500 bg-blue-50/30 font-medium' 
                           : 'border-gray-100 hover:border-gray-200'
                       }`}
                       style={{ 
@@ -638,7 +669,7 @@ export const TextReader: React.FC<TextReaderProps> = ({ content, title, bookId, 
                     <button
                       key={i}
                       onClick={() => updateSetting('theme', i)}
-                      className={`aspect-square rounded-2xl border-2 transition-all active:scale-95 flex flex-col items-center justify-center gap-1 ${
+                      className={`aspect-square rounded-2xl border-2 transition-all active:scale-95 flex items-center justify-center ${
                         settings.theme === i ? 'border-blue-500 scale-110 shadow-lg' : 'border-transparent hover:scale-105'
                       }`}
                       style={{ 
@@ -655,7 +686,7 @@ export const TextReader: React.FC<TextReaderProps> = ({ content, title, bookId, 
               {/* 对齐 */}
               <div className="space-y-3">
                 <span className="text-[15px] font-medium block" style={{ color: theme.text }}>文字对齐</span>
-                <div className="flex bg-gray-100/50 rounded-xl p-1">
+                <div className="flex rounded-xl p-1" style={{ backgroundColor: `${theme.border}80` }}>
                   <button
                     onClick={() => updateSetting('textAlign', 'left')}
                     className={`flex-1 py-2.5 text-[13px] rounded-lg transition-all font-medium ${
@@ -681,7 +712,7 @@ export const TextReader: React.FC<TextReaderProps> = ({ content, title, bookId, 
               <div className="space-y-3">
                 <div className="flex justify-between items-center">
                   <span className="text-[15px] font-medium" style={{ color: theme.text }}>段间距</span>
-                  <span className="text-[13px] opacity-60">{settings.paragraphSpacing}em</span>
+                  <span className="text-[13px] opacity-60" style={{ color: theme.text }}>{settings.paragraphSpacing}em</span>
                 </div>
                 <input 
                   type="range" 
@@ -696,7 +727,7 @@ export const TextReader: React.FC<TextReaderProps> = ({ content, title, bookId, 
               </div>
               
               {/* 自动隐藏 */}
-              <div className="flex items-center justify-between p-4 rounded-2xl bg-gray-50/50">
+              <div className="flex items-center justify-between p-4 rounded-2xl" style={{ backgroundColor: `${theme.border}40` }}>
                 <span className="text-[15px] font-medium" style={{ color: theme.text }}>自动隐藏工具栏</span>
                 <button 
                   onClick={() => updateSetting('autoHideHeader', !settings.autoHideHeader)}
@@ -708,7 +739,7 @@ export const TextReader: React.FC<TextReaderProps> = ({ content, title, bookId, 
               </div>
             </div>
           </div>
-        </>
+        </div>
       )}
     </div>
   );
