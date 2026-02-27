@@ -83,6 +83,7 @@ function cleanNovelContent(rawText: string): string {
 
   let text = rawText;
 
+  // 更精确的广告模式匹配，避免误删内容
   const adPatterns = [
     /本书为八零电子书网.*?存储服务/gi,
     /找好书，看好书，与大家分享好书，请加QQ群/gi,
@@ -97,20 +98,43 @@ function cleanNovelContent(rawText: string): string {
     /丨[^\\n]*?丨/g,
     /\s*http[s]?:\/\/[^\s]+/gi,
     /QQ群[:：]?\s*\d+/gi,
+    /.*?提示.*?本.*?小.*?说.*?更.*?新.*?首.*?发.*?地.*?址.*?/gi,
+    /.*?最.*?快.*?更.*?新.*?小.*?说.*?网.*?/gi,
+    /.*?最.*?新.*?最.*?快.*?小.*?说.*?/gi,
+    /.*?电.*?子.*?书.*?下.*?载.*?/gi,
   ];
 
   adPatterns.forEach((pattern) => {
     text = text.replace(pattern, '');
   });
 
+  // 保留更多原始格式，只清理明显的重复换行
   text = text.replace(/\n{3,}/g, '\n\n');
-  text = text.split('\n').map(line => line.trim()).join('\n');
-
-  // 过滤无效短行（避免误删有效中文）
-  text = text.split('\n').filter(line => {
-    if (line === '') return true;
-    return /[a-zA-Z\u4e00-\u9fa5]/.test(line) || line.length > 5;
-  }).join('\n');
+  
+  // 按行分割并过滤明显无效的行
+  const lines = text.split('\n');
+  const filteredLines = lines.filter(line => {
+    const trimmed = line.trim();
+    if (trimmed === '') return true; // 保留空行
+    
+    // 检查是否包含有意义的内容
+    const meaningfulPattern = /[a-zA-Z\u4e00-\u9fa5]/; // 中文或英文字符
+    if (meaningfulPattern.test(trimmed)) return true;
+    
+    // 检查是否是过短的非中文/英文行
+    if (trimmed.length <= 5) {
+      // 如果是纯数字、纯符号或特定模式，则过滤掉
+      const nonMeaningfulPattern = /^[0-9\s\.\-\_\=\+\*\#\@\!\~\%\^\&\(\)\[\]\{\}\<\>\|\'\"\,\.\/\?\:;]*$/;
+      return !nonMeaningfulPattern.test(trimmed);
+    }
+    
+    return true; // 保留较长的行
+  });
+  
+  text = filteredLines.join('\n');
+  
+  // 再次清理多余的换行
+  text = text.replace(/\n{3,}/g, '\n\n');
 
   return text.trim();
 }
@@ -123,22 +147,28 @@ function parseChapters(text: string): Chapter[] {
 
   const allLines = text.split('\n');
   const rawChapters: { title: string; startLine: number }[] = [];
-  const chapterRegex = /^(第[一二三四五六七八九十百千万零\d]+章|Chapter\s+\d+|\d+\.|【.*?】|.*?章.*?)[\s:：]/i;
+  
+  // 更宽松的章节识别模式
+  const chapterRegex = /^(第[一二三四五六七八九十百千万零\d]+[章节篇部]|Chapter\s+\d+|\d+\.|【.*?】|.*?章.*?)[\s:：]/i;
 
   allLines.forEach((line, index) => {
     const trimmed = line.trim();
-    if (chapterRegex.test(trimmed) || (trimmed.length < 50 && trimmed.includes('章') && trimmed.length > 2)) {
-      rawChapters.push({
-        title: trimmed.slice(0, 50) || `第${rawChapters.length + 1}章`,
-        startLine: index,
-      });
+    if (trimmed.length > 0 && trimmed.length < 100) { // 合理长度限制
+      if (chapterRegex.test(trimmed) || 
+          (trimmed.includes('章') && trimmed.length > 2 && /[a-zA-Z\u4e00-\u9fa5]/.test(trimmed))) {
+        rawChapters.push({
+          title: trimmed.slice(0, 50) || `第${rawChapters.length + 1}章`,
+          startLine: index,
+        });
+      }
     }
   });
 
+  // 如果没找到章节，按固定长度分段
   if (rawChapters.length === 0) {
-    for (let i = 0; i < allLines.length; i += 200) {
+    for (let i = 0; i < allLines.length; i += 500) {
       rawChapters.push({
-        title: `第${Math.floor(i / 200) + 1}部分`,
+        title: `第${Math.floor(i / 500) + 1}部分`,
         startLine: i,
       });
     }
@@ -332,7 +362,7 @@ export function TextReader({ content: rawContent, title, bookId, onClose }: Text
       const maxLine = Math.max(0, (chapter?.lines.length || 1) - 1);
       setLineInChapter(Math.min(saved.lineInChapter, maxLine));
     } else if (chapters.length > 0) {
-      setCurrentChapter(chapters.length - 1);
+      setCurrentChapter(0);
       setLineInChapter(0);
     }
   }, [bookId, chapters]);
@@ -442,11 +472,27 @@ export function TextReader({ content: rawContent, title, bookId, onClose }: Text
   // ============================== 📐 虚拟滚动计算 ==============================
   const getItemHeight = useCallback(
     (index: number): number => {
-      const chapterIndex = findChapterByLineIndex(index);
-      if (chapterIndex === -1) return 60;
-      return Math.max(30, settings.fontSize * settings.lineHeight + settings.paragraphSpacing * 16);
+      // 基础高度计算
+      const baseHeight = Math.max(30, settings.fontSize * settings.lineHeight + settings.paragraphSpacing * 16);
+      
+      // 尝试获取对应行的文本长度来调整高度
+      let accumulated = 0;
+      for (let i = 0; i < chapters.length; i++) {
+        const chapter = chapters[i];
+        if (index < accumulated + chapter.lines.length) {
+          const lineIndex = index - accumulated;
+          const line = chapter.lines[lineIndex] || '';
+          // 根据行长度适当调整高度
+          if (line.length > 50) {
+            return baseHeight * 1.2;
+          }
+          return baseHeight;
+        }
+        accumulated += chapter.lines.length;
+      }
+      return baseHeight;
     },
-    [settings.fontSize, settings.lineHeight, settings.paragraphSpacing]
+    [settings.fontSize, settings.lineHeight, settings.paragraphSpacing, chapters]
   );
 
   const findChapterByLineIndex = useCallback(
@@ -456,7 +502,7 @@ export function TextReader({ content: rawContent, title, bookId, onClose }: Text
         accumulated += chapters[i].lines.length;
         if (accumulated > globalLineIndex) return i;
       }
-      return chapters.length - 1;
+      return Math.max(0, chapters.length - 1);
     },
     [chapters]
   );
@@ -473,6 +519,7 @@ export function TextReader({ content: rawContent, title, bookId, onClose }: Text
 
       return (
         <p
+          key={`${chapterIndex}-${lineIndex}`}
           style={{
             fontSize: `${settings.fontSize}px`,
             fontFamily: settings.fontFamily,
@@ -586,7 +633,7 @@ export function TextReader({ content: rawContent, title, bookId, onClose }: Text
       count: totalLinesAll,
       getScrollElement: () => parentRef.current,
       estimateSize: (index) => itemSizes[index] ?? 30,
-      overscan: 5,
+      overscan: 10, // 增加overscan以提高流畅度
     });
 
     return (
@@ -709,7 +756,26 @@ export function TextReader({ content: rawContent, title, bookId, onClose }: Text
           onClick={onContentClick}
         >
           {settings.pageMode === 'page' ? (
-            <div className="max-w-2xl mx-auto">{/* 翻页模式暂未启用虚拟滚动 */}</div>
+            <div className="max-w-2xl mx-auto">
+              {currentChapterData?.lines.slice(lineInChapter, lineInChapter + 25).map((line, idx) => (
+                <p
+                  key={idx}
+                  style={{
+                    fontSize: `${settings.fontSize}px`,
+                    fontFamily: settings.fontFamily,
+                    lineHeight: settings.lineHeight,
+                    letterSpacing: `${settings.letterSpacing}px`,
+                    textAlign: settings.textAlign,
+                    color: currentTheme.text,
+                    marginBottom: `${settings.paragraphSpacing}em`,
+                    padding: '0 1rem',
+                  }}
+                  className="break-words"
+                >
+                  {line.trim() || '\u00A0'}
+                </p>
+              ))}
+            </div>
           ) : (
             renderVirtualScroll()
           )}
@@ -818,7 +884,26 @@ export function TextReader({ content: rawContent, title, bookId, onClose }: Text
       >
         <div className="max-w-2xl mx-auto px-4 py-4">
           {settings.pageMode === 'page' ? (
-            <div className="max-w-2xl mx-auto">{/* 翻页模式暂未启用虚拟滚动 */}</div>
+            <div className="max-w-2xl mx-auto">
+              {currentChapterData?.lines.slice(lineInChapter, lineInChapter + 25).map((line, idx) => (
+                <p
+                  key={idx}
+                  style={{
+                    fontSize: `${settings.fontSize}px`,
+                    fontFamily: settings.fontFamily,
+                    lineHeight: settings.lineHeight,
+                    letterSpacing: `${settings.letterSpacing}px`,
+                    textAlign: settings.textAlign,
+                    color: currentTheme.text,
+                    marginBottom: `${settings.paragraphSpacing}em`,
+                    padding: '0 1rem',
+                  }}
+                  className="break-words"
+                >
+                  {line.trim() || '\u00A0'}
+                </p>
+              ))}
+            </div>
           ) : (
             renderVirtualScroll()
           )}
