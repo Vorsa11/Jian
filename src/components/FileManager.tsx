@@ -2,9 +2,8 @@ import { useState, useEffect } from 'react'
 import { createClient } from '@supabase/supabase-js'
 
 // 配置（改成你的！）
-const SUPABASE_URL = 'https://eppgffcwmqawegngstqq.supabase.co'  // 【改成你的URL】
-const SUPABASE_KEY = 'sb_publishableyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImVwcGdmZmN3bWdhd2VnbmdzdHFxIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzIyNDUzNDIsImV4cCI6MjA4NzgyMTM0Mn0.Wdtc_a9hcd6yKgHYWEtnGeXW_3lhcraNYy3XCHgB4NU'  // 【改成你的Publishable key】
-
+const SUPABASE_URL = 'https://eppgffcwmgawegngstqq.supabase.co'  // 【改成你的URL】
+const SUPABASE_KEY = 'sb_publishable_lIjp2miQNKJQQuyzrJJWjQ_2xBTet9O'
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY)
 
 export default function FileManager() {
