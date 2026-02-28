@@ -1,6 +1,10 @@
 import { useState, useEffect } from 'react'
 import { createClient } from '@supabase/supabase-js'
 
+// ❌ 错误：URL 末尾有空格！
+// const SUPABASE_URL = 'https://eppgffcwmqawegngstqq.supabase.co '
+
+// ✅ 修正：去掉所有多余空格
 const SUPABASE_URL = 'https://eppgffcwmqawegngstqq.supabase.co'
 const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImVwcGdmZmN3bWdhd2VnbmdzdHFxIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzIyNDUzNDIsImV4cCI6MjA4NzgyMTM0Mn0.Wdtc_a9hcd6yKgHYWEtnGeXW_3lhcraNYy3XCHgB4NU'
 
@@ -19,16 +23,29 @@ export default function FileManager() {
 
   useEffect(() => {
     checkUser()
-    supabase.auth.onAuthStateChange((_event, session) => {
+    
+    // ✅ 修正：添加订阅清理，防止内存泄漏和重复监听
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
       setUser(session?.user ?? null)
       if (session?.user) loadFiles(session.user.id)
     })
+    
+    // 清理函数
+    return () => {
+      subscription.unsubscribe()
+    }
   }, [])
 
   async function checkUser() {
-    const { data: { user } } = await supabase.auth.getUser()
-    setUser(user)
-    if (user) loadFiles(user.id)
+    try {
+      const { data: { user }, error } = await supabase.auth.getUser()
+      if (error) throw error
+      setUser(user)
+      if (user) loadFiles(user.id)
+    } catch (err: any) {
+      console.error('获取用户失败:', err)
+      setMessage('❌ 会话验证失败：' + err.message)
+    }
   }
 
   async function login() {
@@ -38,18 +55,37 @@ export default function FileManager() {
 
     setMessage('正在登录...')
     
-    const { data, error } = await supabase.auth.signInWithPassword({ email, password })
-    if (error) {
-      const { data: signUpData, error: signUpError } = await supabase.auth.signUp({ email, password })
-      if (signUpError) {
-        setMessage('❌ 失败：' + signUpError.message)
+    try {
+      // 先尝试登录
+      const { data, error } = await supabase.auth.signInWithPassword({ email, password })
+      
+      if (error) {
+        // 如果是"Invalid login credentials"，尝试注册
+        if (error.message.includes('Invalid login')) {
+          const { data: signUpData, error: signUpError } = await supabase.auth.signUp({ 
+            email, 
+            password,
+            options: {
+              // 自动确认邮箱（如果配置允许）
+              data: { email_confirmed: true }
+            }
+          })
+          
+          if (signUpError) {
+            setMessage('❌ 注册失败：' + signUpError.message)
+          } else {
+            setUser(signUpData.user)
+            setMessage('✅ 新账号已创建！')
+          }
+        } else {
+          setMessage('❌ 登录失败：' + error.message)
+        }
       } else {
-        setUser(signUpData.user)
-        setMessage('✅ 新账号已创建！')
+        setUser(data.user)
+        setMessage('✅ 登录成功！')
       }
-    } else {
-      setUser(data.user)
-      setMessage('✅ 登录成功！')
+    } catch (err: any) {
+      setMessage('❌ 系统错误：' + err.message)
     }
   }
 
@@ -57,6 +93,7 @@ export default function FileManager() {
     await supabase.auth.signOut()
     setUser(null)
     setFiles([])
+    setMessage('✅ 已退出登录')
   }
 
   function saveGithubConfig() {
@@ -79,12 +116,19 @@ export default function FileManager() {
   }
 
   async function loadFiles(userId: string) {
-    const { data } = await supabase
-      .from('files')
-      .select('*')
-      .eq('user_id', userId)
-      .order('created_at', { ascending: false })
-    setFiles(data || [])
+    try {
+      const { data, error } = await supabase
+        .from('files')
+        .select('*')
+        .eq('user_id', userId)
+        .order('created_at', { ascending: false })
+      
+      if (error) throw error
+      setFiles(data || [])
+    } catch (err: any) {
+      console.error('加载文件失败:', err)
+      setMessage('❌ 加载文件列表失败：' + err.message)
+    }
   }
 
   async function uploadFile(e: React.ChangeEvent<HTMLInputElement>) {
@@ -94,7 +138,7 @@ export default function FileManager() {
       return
     }
 
-    if (!githubConfig.user || !githubConfig.token) {
+    if (!githubConfig.user || !githubConfig.token || !githubConfig.repo) {
       setMessage('❌ 请先配置 GitHub 信息！')
       return
     }
@@ -106,50 +150,51 @@ export default function FileManager() {
       const today = new Date().toISOString().split('T')[0]
       const tagName = `files-${today}`
       
-      // 先检查是否已存在
-      let releaseId
-      try {
-        const getRes = await fetch(`https://api.github.com/repos/${githubConfig.user}/${githubConfig.repo}/releases/tags/${tagName}`, {
-          headers: { 
+      let releaseId: number | null = null
+      
+      // 检查 Release 是否存在
+      const getRes = await fetch(
+        `https://api.github.com/repos/${githubConfig.user}/${githubConfig.repo}/releases/tags/${tagName}`, {
+        headers: { 
+          'Authorization': `token ${githubConfig.token}`,
+          'Accept': 'application/vnd.github.v3+json'
+        }
+      })
+      
+      if (getRes.ok) {
+        const release = await getRes.json()
+        releaseId = release.id
+      } else if (getRes.status === 404) {
+        // 创建新 Release
+        const createRes = await fetch(
+          `https://api.github.com/repos/${githubConfig.user}/${githubConfig.repo}/releases`, {
+          method: 'POST',
+          headers: {
             'Authorization': `token ${githubConfig.token}`,
+            'Content-Type': 'application/json',
             'Accept': 'application/vnd.github.v3+json'
-          }
+          },
+          body: JSON.stringify({
+            tag_name: tagName,
+            name: `文件集 ${tagName}`,
+            body: '自动上传的文件集合'
+          })
         })
         
-        if (getRes.ok) {
-          const release = await getRes.json()
-          releaseId = release.id
-        } else if (getRes.status === 404) {
-          // 不存在，创建新的 - 关键修复：确保 header 正确
-          const createRes = await fetch(`https://api.github.com/repos/${githubConfig.user}/${githubConfig.repo}/releases`, {
-            method: 'POST',
-            headers: {
-              'Authorization': `token ${githubConfig.token}`,
-              'Content-Type': 'application/json',  // 关键！必须加
-              'Accept': 'application/vnd.github.v3+json'
-            },
-            body: JSON.stringify({
-              tag_name: tagName,
-              name: `文件集 ${tagName}`,
-              body: '自动上传的文件集合'
-            })
-          })
-          
-          if (!createRes.ok) {
-            const errData = await createRes.json()
-            throw new Error(errData.message || `创建失败: ${createRes.status}`)
-          }
-          
-          const release = await createRes.json()
-          releaseId = release.id
-        } else {
-          throw new Error('检查存储位置失败')
+        if (!createRes.ok) {
+          const errData = await createRes.json()
+          throw new Error(errData.message || `创建失败: ${createRes.status}`)
         }
-      } catch (err: any) {
-        throw new Error('GitHub API 错误: ' + err.message)
+        
+        const release = await createRes.json()
+        releaseId = release.id
+      } else {
+        throw new Error(`检查存储位置失败: ${getRes.status}`)
       }
       
-      // 上传文件
+      if (!releaseId) throw new Error('无法获取 Release ID')
+      
+      // 上传文件到 Release
       const uploadUrl = `https://uploads.github.com/repos/${githubConfig.user}/${githubConfig.repo}/releases/${releaseId}/assets?name=${encodeURIComponent(file.name)}`
       
       const response = await fetch(uploadUrl, {
@@ -169,7 +214,8 @@ export default function FileManager() {
       
       const githubData = await response.json()
       
-      await supabase.from('files').insert({
+      // 保存到 Supabase
+      const { error: dbError } = await supabase.from('files').insert({
         user_id: user.id,
         name: file.name,
         url: githubData.browser_download_url,
@@ -178,7 +224,9 @@ export default function FileManager() {
         created_at: new Date().toISOString()
       })
 
-      loadFiles(user.id)
+      if (dbError) throw dbError
+
+      await loadFiles(user.id)
       setMessage('✅ 上传成功！已同步到所有设备')
       e.target.value = ''
     } catch (err: any) {
@@ -191,8 +239,16 @@ export default function FileManager() {
 
   async function deleteFile(id: string) {
     if (!confirm('确定要删除这个文件记录？')) return
-    await supabase.from('files').delete().eq('id', id)
-    if (user) loadFiles(user.id)
+    
+    try {
+      const { error } = await supabase.from('files').delete().eq('id', id)
+      if (error) throw error
+      
+      if (user) loadFiles(user.id)
+      setMessage('✅ 已删除')
+    } catch (err: any) {
+      setMessage('❌ 删除失败：' + err.message)
+    }
   }
 
   const isConfigured = githubConfig.user && githubConfig.token && githubConfig.repo
@@ -235,7 +291,11 @@ export default function FileManager() {
 
       {/* 消息 */}
       {message && (
-        <div className={`text-sm p-2 rounded-lg text-center ${message.startsWith('✅') ? 'bg-green-100 text-green-800' : message.startsWith('❌') ? 'bg-red-100 text-red-800' : 'bg-gray-100 text-gray-800'}`}>
+        <div className={`text-sm p-2 rounded-lg text-center ${
+          message.startsWith('✅') ? 'bg-green-100 text-green-800' : 
+          message.startsWith('❌') ? 'bg-red-100 text-red-800' : 
+          'bg-gray-100 text-gray-800'
+        }`}>
           {message}
         </div>
       )}
@@ -244,7 +304,12 @@ export default function FileManager() {
       {user && (
         <div className="bg-gray-50 border border-gray-200 rounded-xl p-4">
           <h4 className="font-semibold text-gray-900 mb-3">📤 上传文件</h4>
-          <input type="file" onChange={uploadFile} disabled={uploading} className="w-full text-sm file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-xs file:font-semibold file:bg-primary file:text-primary-foreground hover:file:bg-primary/90 disabled:opacity-50" />
+          <input 
+            type="file" 
+            onChange={uploadFile} 
+            disabled={uploading} 
+            className="w-full text-sm file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-xs file:font-semibold file:bg-primary file:text-primary-foreground hover:file:bg-primary/90 disabled:opacity-50" 
+          />
           {uploading && <p className="text-xs text-gray-600 mt-2">上传中...</p>}
           {!isConfigured && <p className="text-xs text-red-500 mt-2">请先完成第一步配置</p>}
         </div>
@@ -269,8 +334,20 @@ export default function FileManager() {
                     <p className="text-xs text-gray-500">{(file.size / 1024 / 1024).toFixed(2)} MB</p>
                   </div>
                   <div className="flex gap-1">
-                    <a href={file.url} target="_blank" rel="noopener noreferrer" className="px-2 py-1 bg-blue-100 text-blue-700 rounded text-xs hover:bg-blue-200">查看</a>
-                    <button onClick={() => deleteFile(file.id)} className="px-2 py-1 bg-red-100 text-red-700 rounded text-xs hover:bg-red-200">删除</button>
+                    <a 
+                      href={file.url} 
+                      target="_blank" 
+                      rel="noopener noreferrer" 
+                      className="px-2 py-1 bg-blue-100 text-blue-700 rounded text-xs hover:bg-blue-200"
+                    >
+                      查看
+                    </a>
+                    <button 
+                      onClick={() => deleteFile(file.id)} 
+                      className="px-2 py-1 bg-red-100 text-red-700 rounded text-xs hover:bg-red-200"
+                    >
+                      删除
+                    </button>
                   </div>
                 </div>
               ))
