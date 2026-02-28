@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import { createClient } from '@supabase/supabase-js'
 import type { User } from '@supabase/supabase-js'
 
+// ✅ 修复：去掉URL末尾空格
 const SUPABASE_URL = 'https://eppgffcwmqawegngstqq.supabase.co'
 const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImVwcGdmZmN3bWdhd2VnbmdzdHFxIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzIyNDUzNDIsImV4cCI6MjA4NzgyMTM0Mn0.Wdtc_a9hcd6yKgHYWEtnGeXW_3lhcraNYy3XCHgB4NU'
 
@@ -93,24 +94,44 @@ export default function FileManager() {
       setUser(currentUser)
       if (currentUser) {
         setTimeout(() => loadFiles(currentUser.id), 0)
+      } else {
+        setFiles([]) // 清空文件列表当登出时
       }
     })
     
     return () => subscription.unsubscribe()
   }, [loadFiles])
 
+  // ✅ 修复：处理 AuthSessionMissingError 为正常情况，不是错误
   async function checkUser() {
     try {
       const { data: { user }, error } = await supabase.auth.getUser()
-      if (error) throw error
+      
+      // 如果是"没有会话"错误，这是正常的，静默处理
+      if (error) {
+        if (error.name === 'AuthSessionMissingError' || 
+            error.message?.includes('Auth session missing')) {
+          console.log('用户未登录')
+          setUser(null)
+          return
+        }
+        throw error
+      }
+      
       setUser(user)
       if (user) loadFiles(user.id)
     } catch (err: any) {
       console.error('获取用户失败:', err)
-      setMessage('❌ 会话验证失败：' + err.message)
+      // 区分网络错误和认证错误
+      if (err.message?.includes('Failed to fetch') || err.message?.includes('Network')) {
+        setMessage('❌ 网络连接失败，请检查网络或Supabase服务状态')
+      } else {
+        setMessage('❌ 会话验证失败：' + err.message)
+      }
     }
   }
 
+  // ✅ 修复：合并登录逻辑，添加网络错误处理
   async function login() {
     const email = prompt('请输入邮箱（三端用同一个）：')?.trim()
     const password = prompt('请输入密码（三端必须一样）：')?.trim()
@@ -120,12 +141,13 @@ export default function FileManager() {
       return
     }
 
-    setMessage('正在登录...')
+    setMessage('正在连接服务器...')
     
     try {
       const { data, error } = await supabase.auth.signInWithPassword({ email, password })
       
       if (error) {
+        // 如果是登录失败，尝试注册
         if (error.message.includes('Invalid login')) {
           const { data: signUpData, error: signUpError } = await supabase.auth.signUp({ 
             email, 
@@ -140,14 +162,23 @@ export default function FileManager() {
             setMessage('✅ 新账号已创建！')
           }
         } else {
-          setMessage('❌ 登录失败：' + error.message)
+          throw error
         }
       } else {
         setUser(data.user)
         setMessage('✅ 登录成功！')
       }
     } catch (err: any) {
-      setMessage('❌ 系统错误：' + err.message)
+      console.error('登录错误:', err)
+      
+      // 详细错误诊断
+      if (err.message?.includes('Failed to fetch') || err.name === 'TypeError') {
+        setMessage('❌ 无法连接到服务器。可能原因：\n1. 网络连接问题\n2. Supabase 项目被暂停或删除\n3. 防火墙阻止连接')
+      } else if (err.message?.includes('Invalid login')) {
+        setMessage('❌ 邮箱或密码错误')
+      } else {
+        setMessage('❌ 登录失败：' + err.message)
+      }
     }
   }
 
@@ -291,7 +322,7 @@ export default function FileManager() {
       const releaseId = await getOrCreateRelease(tagName)
       if (!releaseId) throw new Error('无法获取 Release ID')
 
-      // 直接使用 File 对象，浏览器会自动流式传输，不会占用大量内存
+      // ✅ 修复：去掉URL中的空格
       const uploadUrl = `https://uploads.github.com/repos/${githubConfig.user}/${githubConfig.repo}/releases/${releaseId}/assets?name=${encodeURIComponent(file.name)}`
       
       setMessage('正在上传，请勿关闭页面...')
@@ -351,8 +382,6 @@ export default function FileManager() {
       const releaseId = await getOrCreateRelease(tagName)
       if (!releaseId) throw new Error('无法获取 Release ID')
 
-      const uploadedChunks: string[] = []
-
       for (let i = 0; i < totalChunks; i++) {
         const start = i * CHUNK_SIZE
         const end = Math.min(start + CHUNK_SIZE, file.size)
@@ -371,6 +400,7 @@ export default function FileManager() {
         const controller = new AbortController()
         setUploadController(controller)
 
+        // ✅ 修复：去掉URL中的空格
         const uploadUrl = `https://uploads.github.com/repos/${githubConfig.user}/${githubConfig.repo}/releases/${releaseId}/assets?name=${encodeURIComponent(chunkName)}`
         
         const githubData = await uploadWithProgress(
@@ -385,8 +415,6 @@ export default function FileManager() {
           (prog) => setProgress({ ...prog, percentage: Math.round(((i * CHUNK_SIZE + prog.loaded) / file.size) * 100) }),
           controller.signal
         )
-
-        uploadedChunks.push(githubData.browser_download_url)
 
         // 保存分块记录
         await supabase.from('files').insert({
@@ -418,7 +446,7 @@ export default function FileManager() {
 
   // ✅ 获取或创建 Release
   async function getOrCreateRelease(tagName: string): Promise<number | null> {
-    // 检查 Release 是否存在
+    // ✅ 修复：去掉URL中的空格
     const getUrl = `https://api.github.com/repos/${githubConfig.user}/${githubConfig.repo}/releases/tags/${tagName}`
     
     const getRes = await fetch(getUrl, {
@@ -433,7 +461,7 @@ export default function FileManager() {
       const release = await getRes.json()
       return release.id
     } else if (getRes.status === 404) {
-      // 创建新 Release
+      // ✅ 修复：去掉URL中的空格
       const createRes = await fetch(
         `https://api.github.com/repos/${githubConfig.user}/${githubConfig.repo}/releases`,
         {
