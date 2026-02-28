@@ -2,7 +2,10 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import { createClient } from '@supabase/supabase-js'
 import type { User } from '@supabase/supabase-js'
 
-// ✅ 修复：去掉URL末尾空格
+// ✅ Cloudflare Worker 代理地址（解决 CORS）
+const WORKER_URL = 'https://jian-proxy.849828099.workers.dev'
+
+// ✅ Supabase 配置（确保没有空格）
 const SUPABASE_URL = 'https://qgchjazbxtdnezjlwtrh.supabase.co'
 const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InFnY2hqYXpieHRkbmV6amx3dHJoIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzIyNzQwNDEsImV4cCI6MjA4Nzg1MDA0MX0.bWte3zs3LApyxVKLKIwjCjJa-M0KpJwPnQzjfkEerxs'
 
@@ -20,10 +23,10 @@ interface FileRecord {
   size: number
   type: string
   created_at: string
-  is_chunked?: boolean // 是否为分块文件
-  total_chunks?: number // 总分块数
-  chunk_index?: number // 当前块序号
-  original_name?: string // 原始文件名（分块时使用）
+  is_chunked?: boolean
+  total_chunks?: number
+  chunk_index?: number
+  original_name?: string
 }
 
 interface GithubConfig {
@@ -40,7 +43,6 @@ interface UploadProgress {
   timeLeft: string
 }
 
-// 格式化文件大小
 function formatFileSize(bytes: number): string {
   if (bytes === 0) return '0 Bytes'
   const k = 1024
@@ -49,7 +51,6 @@ function formatFileSize(bytes: number): string {
   return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i]
 }
 
-// 格式化速度
 function formatSpeed(bytesPerSecond: number): string {
   return formatFileSize(bytesPerSecond) + '/s'
 }
@@ -95,19 +96,17 @@ export default function FileManager() {
       if (currentUser) {
         setTimeout(() => loadFiles(currentUser.id), 0)
       } else {
-        setFiles([]) // 清空文件列表当登出时
+        setFiles([])
       }
     })
     
     return () => subscription.unsubscribe()
   }, [loadFiles])
 
-  // ✅ 修复：处理 AuthSessionMissingError 为正常情况，不是错误
   async function checkUser() {
     try {
       const { data: { user }, error } = await supabase.auth.getUser()
       
-      // 如果是"没有会话"错误，这是正常的，静默处理
       if (error) {
         if (error.name === 'AuthSessionMissingError' || 
             error.message?.includes('Auth session missing')) {
@@ -122,7 +121,6 @@ export default function FileManager() {
       if (user) loadFiles(user.id)
     } catch (err: any) {
       console.error('获取用户失败:', err)
-      // 区分网络错误和认证错误
       if (err.message?.includes('Failed to fetch') || err.message?.includes('Network')) {
         setMessage('❌ 网络连接失败，请检查网络或Supabase服务状态')
       } else {
@@ -131,7 +129,6 @@ export default function FileManager() {
     }
   }
 
-  // ✅ 修复：合并登录逻辑，添加网络错误处理
   async function login() {
     const email = prompt('请输入邮箱（三端用同一个）：')?.trim()
     const password = prompt('请输入密码（三端必须一样）：')?.trim()
@@ -147,7 +144,6 @@ export default function FileManager() {
       const { data, error } = await supabase.auth.signInWithPassword({ email, password })
       
       if (error) {
-        // 如果是登录失败，尝试注册
         if (error.message.includes('Invalid login')) {
           const { data: signUpData, error: signUpError } = await supabase.auth.signUp({ 
             email, 
@@ -170,10 +166,8 @@ export default function FileManager() {
       }
     } catch (err: any) {
       console.error('登录错误:', err)
-      
-      // 详细错误诊断
       if (err.message?.includes('Failed to fetch') || err.name === 'TypeError') {
-        setMessage('❌ 无法连接到服务器。可能原因：\n1. 网络连接问题\n2. Supabase 项目被暂停或删除\n3. 防火墙阻止连接')
+        setMessage('❌ 无法连接到服务器')
       } else if (err.message?.includes('Invalid login')) {
         setMessage('❌ 邮箱或密码错误')
       } else {
@@ -213,7 +207,6 @@ export default function FileManager() {
     setTimeout(() => setMessage(''), 3000)
   }
 
-  // ✅ 使用 XMLHttpRequest 支持进度监控和取消
   async function uploadWithProgress(
     url: string, 
     file: File | Blob, 
@@ -227,7 +220,7 @@ export default function FileManager() {
       xhr.upload.addEventListener('progress', (event) => {
         if (event.lengthComputable) {
           const now = Date.now()
-          const elapsed = (now - startTimeRef.current) / 1000 // seconds
+          const elapsed = (now - startTimeRef.current) / 1000
           const speed = elapsed > 0 ? event.loaded / elapsed : 0
           const remaining = event.loaded > 0 ? (event.total - event.loaded) / speed : 0
           
@@ -273,6 +266,41 @@ export default function FileManager() {
     })
   }
 
+  // ✅ 通过 Cloudflare Worker 获取或创建 Release
+  async function getOrCreateRelease(tagName: string): Promise<number | null> {
+    // 先尝试获取已存在的 Release
+    const getRes = await fetch(
+      `${WORKER_URL}/api/release?owner=${githubConfig.user}&repo=${githubConfig.repo}&tag=${tagName}&token=${githubConfig.token}`
+    );
+    
+    if (getRes.ok) {
+      const release = await getRes.json();
+      return release.id;
+    }
+    
+    // 不存在则创建新的
+    const createRes = await fetch(`${WORKER_URL}/api/releases`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        owner: githubConfig.user,
+        repo: githubConfig.repo,
+        tag: tagName,
+        token: githubConfig.token,
+        name: `文件集 ${tagName}`,
+        body: '自动上传的文件集合'
+      })
+    });
+    
+    if (!createRes.ok) {
+      const errData = await createRes.json();
+      throw new Error(errData.message || `创建 Release 失败: ${createRes.status}`);
+    }
+    
+    const release = await createRes.json();
+    return release.id;
+  }
+
   async function uploadFile(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0]
     if (!file || !user) {
@@ -285,18 +313,17 @@ export default function FileManager() {
       return
     }
 
-    // ✅ 检查 2GB 硬性限制
     if (file.size > MAX_FILE_SIZE) {
       const shouldChunk = confirm(
         `文件大小为 ${formatFileSize(file.size)}，超过 GitHub Releases 单文件 2GB 限制。\n\n` +
-        `是否自动分块上传？（将文件分割成多个 <2GB 的部分分别上传）`
+        `是否自动分块上传？`
       )
       if (shouldChunk) {
         await uploadChunkedFile(file)
         e.target.value = ''
         return
       } else {
-        setMessage(`❌ 已取消上传。单文件不能超过 2GB`)
+        setMessage(`❌ 已取消上传`)
         return
       }
     }
@@ -305,7 +332,7 @@ export default function FileManager() {
     e.target.value = ''
   }
 
-  // ✅ 上传单文件（<2GB）
+  // ✅ 上传单文件（<2GB）- 使用 Worker 代理
   async function uploadSingleFile(file: File) {
     setUploading(true)
     setProgress({ loaded: 0, total: file.size, percentage: 0, speed: '0 KB/s', timeLeft: '计算中...' })
@@ -318,12 +345,11 @@ export default function FileManager() {
       const today = new Date().toISOString().split('T')[0]
       const tagName = `files-${today}`
       
-      // 获取或创建 Release
       const releaseId = await getOrCreateRelease(tagName)
       if (!releaseId) throw new Error('无法获取 Release ID')
 
-      // ✅ 修复：去掉URL中的空格
-      const uploadUrl = `https://uploads.github.com/repos/${githubConfig.user}/${githubConfig.repo}/releases/${releaseId}/assets?name=${encodeURIComponent(file.name)}`
+      // ✅ 通过 Worker 上传（解决 CORS）
+      const uploadUrl = `${WORKER_URL}/api/upload?release_id=${releaseId}&owner=${githubConfig.user}&repo=${githubConfig.repo}&token=${githubConfig.token}&name=${encodeURIComponent(file.name)}`
       
       setMessage('正在上传，请勿关闭页面...')
       
@@ -331,16 +357,12 @@ export default function FileManager() {
         uploadUrl,
         file,
         {
-          'Authorization': `Bearer ${githubConfig.token}`,
-          'Content-Type': file.type || 'application/octet-stream',
-          'Accept': 'application/vnd.github.v3+json',
-          'X-GitHub-Api-Version': '2022-11-28'
+          'Content-Type': file.type || 'application/octet-stream'
         },
         (prog) => setProgress(prog),
         controller.signal
       )
 
-      // 保存到 Supabase
       const { error: dbError } = await supabase.from('files').insert({
         user_id: user!.id,
         name: file.name,
@@ -370,7 +392,7 @@ export default function FileManager() {
     }
   }
 
-  // ✅ 分块上传（>2GB 文件）
+  // ✅ 分块上传（>2GB 文件）- 使用 Worker 代理
   async function uploadChunkedFile(file: File) {
     const totalChunks = Math.ceil(file.size / CHUNK_SIZE)
     setUploading(true)
@@ -400,23 +422,19 @@ export default function FileManager() {
         const controller = new AbortController()
         setUploadController(controller)
 
-        // ✅ 修复：去掉URL中的空格
-        const uploadUrl = `https://uploads.github.com/repos/${githubConfig.user}/${githubConfig.repo}/releases/${releaseId}/assets?name=${encodeURIComponent(chunkName)}`
+        // ✅ 通过 Worker 上传分块
+        const uploadUrl = `${WORKER_URL}/api/upload?release_id=${releaseId}&owner=${githubConfig.user}&repo=${githubConfig.repo}&token=${githubConfig.token}&name=${encodeURIComponent(chunkName)}`
         
         const githubData = await uploadWithProgress(
           uploadUrl,
           chunk,
           {
-            'Authorization': `Bearer ${githubConfig.token}`,
-            'Content-Type': 'application/octet-stream',
-            'Accept': 'application/vnd.github.v3+json',
-            'X-GitHub-Api-Version': '2022-11-28'
+            'Content-Type': 'application/octet-stream'
           },
           (prog) => setProgress({ ...prog, percentage: Math.round(((i * CHUNK_SIZE + prog.loaded) / file.size) * 100) }),
           controller.signal
         )
 
-        // 保存分块记录
         await supabase.from('files').insert({
           user_id: user!.id,
           name: chunkName,
@@ -432,7 +450,7 @@ export default function FileManager() {
       }
 
       await loadFiles(user!.id)
-      setMessage(`✅ 分块上传完成！${file.name} 被分成 ${totalChunks} 个部分上传成功`)
+      setMessage(`✅ 分块上传完成！`)
       setTimeout(() => setMessage(''), 5000)
     } catch (err: any) {
       console.error('分块上传错误:', err)
@@ -444,56 +462,6 @@ export default function FileManager() {
     }
   }
 
-  // ✅ 获取或创建 Release
-  async function getOrCreateRelease(tagName: string): Promise<number | null> {
-    // ✅ 修复：去掉URL中的空格
-    const getUrl = `https://api.github.com/repos/${githubConfig.user}/${githubConfig.repo}/releases/tags/${tagName}`
-    
-    const getRes = await fetch(getUrl, {
-      headers: { 
-        'Authorization': `Bearer ${githubConfig.token}`,
-        'Accept': 'application/vnd.github.v3+json',
-        'X-GitHub-Api-Version': '2022-11-28'
-      }
-    })
-    
-    if (getRes.ok) {
-      const release = await getRes.json()
-      return release.id
-    } else if (getRes.status === 404) {
-      // ✅ 修复：去掉URL中的空格
-      const createRes = await fetch(
-        `https://api.github.com/repos/${githubConfig.user}/${githubConfig.repo}/releases`,
-        {
-          method: 'POST',
-          headers: {
-            'Authorization': `Bearer ${githubConfig.token}`,
-            'Content-Type': 'application/json',
-            'Accept': 'application/vnd.github.v3+json',
-            'X-GitHub-Api-Version': '2022-11-28'
-          },
-          body: JSON.stringify({
-            tag_name: tagName,
-            name: `文件集 ${tagName}`,
-            body: '自动上传的文件集合',
-            draft: false,
-            prerelease: false
-          })
-        }
-      )
-      
-      if (!createRes.ok) {
-        const errData = await createRes.json()
-        throw new Error(errData.message || `创建 Release 失败: ${createRes.status}`)
-      }
-      
-      const release = await createRes.json()
-      return release.id
-    } else {
-      throw new Error(`检查 Release 失败: ${getRes.status}`)
-    }
-  }
-
   function cancelUpload() {
     if (uploadController) {
       uploadController.abort()
@@ -502,7 +470,7 @@ export default function FileManager() {
   }
 
   async function deleteFile(id: string, name: string) {
-    if (!confirm(`确定要删除 "${name}"？\n注意：这只会删除数据库记录，GitHub Release 中的文件仍会保留。`)) return
+    if (!confirm(`确定要删除 "${name}"？`)) return
     
     try {
       const { error } = await supabase.from('files').delete().eq('id', id)
@@ -519,184 +487,91 @@ export default function FileManager() {
 
   return (
     <div className="space-y-4 p-2 max-w-2xl mx-auto">
-      {/* GitHub 配置 */}
       <div className="bg-amber-50 border border-amber-200 rounded-xl p-4">
         <h4 className="font-semibold text-amber-900 mb-2">⚙️ 第一步：配置 GitHub（只需一次）</h4>
-        
         {!isConfigured ? (
           <div className="space-y-2">
             <p className="text-sm text-amber-800">状态：<span className="font-bold text-red-600">未配置</span></p>
-            <button 
-              onClick={saveGithubConfig} 
-              className="w-full py-2 bg-amber-500 hover:bg-amber-600 text-white rounded-lg text-sm font-medium transition-colors"
-            >
-              点击配置 GitHub
-            </button>
+            <button onClick={saveGithubConfig} className="w-full py-2 bg-amber-500 text-white rounded-lg">点击配置 GitHub</button>
           </div>
         ) : (
           <div className="space-y-2">
-            <p className="text-sm text-amber-800">
-              状态：<span className="font-bold text-green-600">已配置</span> ({githubConfig.user}/{githubConfig.repo})
-            </p>
-            <button 
-              onClick={saveGithubConfig} 
-              className="text-xs text-amber-700 underline hover:text-amber-900"
-            >
-              修改配置
-            </button>
+            <p className="text-sm text-amber-800">状态：<span className="font-bold text-green-600">已配置</span> ({githubConfig.user}/{githubConfig.repo})</p>
+            <button onClick={saveGithubConfig} className="text-xs text-amber-700 underline">修改配置</button>
           </div>
         )}
       </div>
 
-      {/* 登录 */}
       <div className="bg-blue-50 border border-blue-200 rounded-xl p-4">
         <h4 className="font-semibold text-blue-900 mb-2">🔐 第二步：登录账号</h4>
-        
         {!user ? (
           <div className="space-y-2">
             <p className="text-sm text-blue-800">三端请使用同一个邮箱和密码</p>
-            <button 
-              onClick={login} 
-              className="w-full py-2 bg-blue-500 hover:bg-blue-600 text-white rounded-lg text-sm font-medium transition-colors"
-            >
-              登录 / 注册
-            </button>
+            <button onClick={login} className="w-full py-2 bg-blue-500 text-white rounded-lg">登录 / 注册</button>
           </div>
         ) : (
           <div className="space-y-2">
-            <p className="text-sm text-blue-800">
-              已登录：<span className="font-bold">{user.email}</span>
-            </p>
-            <button 
-              onClick={logout} 
-              className="text-xs text-blue-700 underline hover:text-blue-900"
-            >
-              切换账号
-            </button>
+            <p className="text-sm text-blue-800">已登录：<span className="font-bold">{user.email}</span></p>
+            <button onClick={logout} className="text-xs text-blue-700 underline">切换账号</button>
           </div>
         )}
       </div>
 
-      {/* 消息提示 */}
       {message && (
         <div className={`text-sm p-3 rounded-lg text-center border ${
-          message.startsWith('✅') ? 'bg-green-100 text-green-800 border-green-200' : 
-          message.startsWith('❌') ? 'bg-red-100 text-red-800 border-red-200' : 
-          message.startsWith('⚠️') ? 'bg-yellow-100 text-yellow-800 border-yellow-200' :
-          'bg-blue-100 text-blue-800 border-blue-200'
+          message.startsWith('✅') ? 'bg-green-100 text-green-800' : 
+          message.startsWith('❌') ? 'bg-red-100 text-red-800' : 
+          'bg-blue-100 text-blue-800'
         }`}>
           {message}
         </div>
       )}
 
-      {/* 上传区域 */}
       {user && (
         <div className="bg-gray-50 border border-gray-200 rounded-xl p-4">
           <h4 className="font-semibold text-gray-900 mb-3">📤 上传文件（最大支持 2GB）</h4>
+          <input ref={fileInputRef} type="file" onChange={uploadFile} disabled={uploading} className="w-full text-sm mb-3" />
+          <p className="text-xs text-gray-500">单文件最大 2GB，超过会自动分块</p>
           
-          <input 
-            ref={fileInputRef}
-            type="file" 
-            onChange={uploadFile} 
-            disabled={uploading} 
-            className="w-full text-sm file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-xs file:font-semibold file:bg-blue-500 file:text-white hover:file:bg-blue-600 disabled:opacity-50 cursor-pointer mb-3"
-          />
-          
-          {!isConfigured && (
-            <p className="text-xs text-red-500">⚠️ 请先完成第一步 GitHub 配置</p>
-          )}
-          
-          <p className="text-xs text-gray-500 mt-2">
-            💡 提示：单文件最大 2GB，超过会自动分块上传
-          </p>
-
-          {/* 上传进度条 */}
           {uploading && progress && (
             <div className="mt-4 space-y-2">
               <div className="flex justify-between text-xs text-gray-600">
                 <span>{progress.percentage}% ({formatFileSize(progress.loaded)} / {formatFileSize(progress.total)})</span>
                 <span>{progress.speed} • 剩余 {progress.timeLeft}</span>
               </div>
-              
-              <div className="w-full bg-gray-200 rounded-full h-2.5 overflow-hidden">
-                <div 
-                  className="bg-blue-600 h-2.5 rounded-full transition-all duration-300" 
-                  style={{ width: `${progress.percentage}%` }}
-                ></div>
+              <div className="w-full bg-gray-200 rounded-full h-2.5">
+                <div className="bg-blue-600 h-2.5 rounded-full" style={{ width: `${progress.percentage}%` }}></div>
               </div>
-              
-              <button 
-                onClick={cancelUpload}
-                className="w-full py-1.5 bg-red-100 text-red-700 rounded text-xs font-medium hover:bg-red-200 transition-colors"
-              >
-                取消上传
-              </button>
+              <button onClick={cancelUpload} className="w-full py-1.5 bg-red-100 text-red-700 rounded text-xs">取消上传</button>
             </div>
           )}
         </div>
       )}
 
-      {/* 文件列表 */}
       {user && (
-        <div className="bg-white border border-gray-200 rounded-xl p-4 shadow-sm">
+        <div className="bg-white border border-gray-200 rounded-xl p-4">
           <div className="flex items-center justify-between mb-3">
             <h4 className="font-semibold text-gray-900">📋 我的文件 ({files.length})</h4>
-            <button 
-              onClick={() => loadFiles(user.id)} 
-              className="text-xs text-blue-600 hover:text-blue-800 hover:underline"
-            >
-              刷新列表
-            </button>
+            <button onClick={() => loadFiles(user.id)} className="text-xs text-blue-600">刷新</button>
           </div>
-          
           <div className="space-y-2 max-h-80 overflow-y-auto">
             {files.length === 0 ? (
-              <div className="text-center py-8 text-gray-400">
-                <p className="text-sm">还没有文件</p>
-                <p className="text-xs mt-1">支持上传最大 2GB 的单个文件</p>
-              </div>
+              <p className="text-sm text-gray-500 text-center py-4">还没有文件</p>
             ) : (
               files.map(file => (
-                <div key={file.id} className="flex items-center justify-between p-3 bg-gray-50 rounded-lg text-sm hover:bg-gray-100 transition-colors border border-gray-100">
-                  <div className="flex-1 min-w-0 mr-3">
-                    <div className="flex items-center gap-2">
-                      <p className="truncate font-medium text-gray-900" title={file.name}>
-                        {file.is_chunked ? `📦 ${file.original_name} (分块 ${file.chunk_index}/${file.total_chunks})` : file.name}
-                      </p>
-                      {file.is_chunked && (
-                        <span className="px-1.5 py-0.5 bg-yellow-100 text-yellow-700 text-[10px] rounded">PART</span>
-                      )}
-                    </div>
-                    <p className="text-xs text-gray-500 mt-1">
-                      {formatFileSize(file.size)} • {new Date(file.created_at).toLocaleDateString()}
-                    </p>
+                <div key={file.id} className="flex items-center justify-between p-3 bg-gray-50 rounded-lg text-sm">
+                  <div className="flex-1 min-w-0 mr-2">
+                    <p className="truncate font-medium">{file.is_chunked ? `📦 ${file.original_name} (分块 ${file.chunk_index}/${file.total_chunks})` : file.name}</p>
+                    <p className="text-xs text-gray-500">{formatFileSize(file.size)}</p>
                   </div>
-                  <div className="flex gap-2 shrink-0">
-                    <a 
-                      href={file.url} 
-                      target="_blank" 
-                      rel="noopener noreferrer" 
-                      className="px-3 py-1.5 bg-blue-100 text-blue-700 rounded-md text-xs font-medium hover:bg-blue-200 transition-colors whitespace-nowrap"
-                    >
-                      下载
-                    </a>
-                    <button 
-                      onClick={() => deleteFile(file.id, file.name)} 
-                      className="px-3 py-1.5 bg-red-100 text-red-700 rounded-md text-xs font-medium hover:bg-red-200 transition-colors"
-                    >
-                      删除
-                    </button>
+                  <div className="flex gap-2">
+                    <a href={file.url} target="_blank" className="px-3 py-1.5 bg-blue-100 text-blue-700 rounded text-xs">下载</a>
+                    <button onClick={() => deleteFile(file.id, file.name)} className="px-3 py-1.5 bg-red-100 text-red-700 rounded text-xs">删除</button>
                   </div>
                 </div>
               ))
             )}
           </div>
-          
-          {files.some(f => f.is_chunked) && (
-            <div className="mt-3 p-2 bg-yellow-50 border border-yellow-200 rounded text-xs text-yellow-800">
-              💡 提示：分块文件下载后，需要手动合并（Windows: copy /b file.part1 + file.part2 file.ext）
-            </div>
-          )}
         </div>
       )}
     </div>
