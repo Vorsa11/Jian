@@ -4,7 +4,6 @@ import {
   Calendar,
   Edit2,
   MessageSquare,
-  MoreVertical,
   Plus,
   Star,
   Trash2,
@@ -27,12 +26,6 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from '@/components/ui/dropdown-menu';
 import {
   Select,
   SelectContent,
@@ -76,7 +69,6 @@ export function BookDetail({
   onDelete,
   onAddAnnotation,
   onUpdateAnnotation,
-  onDeleteAnnotation,
   onUploadFile,
   onDeleteFile,
   onReadPDF,
@@ -163,10 +155,6 @@ export function BookDetail({
     toast.success('批注已更新');
   };
 
-  const handleDeleteAnnotation = (annotationId: string) => {
-    onDeleteAnnotation(book.id, annotationId);
-  };
-
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file && onUploadFile) {
@@ -196,26 +184,6 @@ export function BookDetail({
           <ArrowLeft className="h-5 w-5" />
         </Button>
         <h1 className="text-lg font-semibold flex-1 truncate">{book.title}</h1>
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <Button variant="ghost" size="icon">
-              <MoreVertical className="h-5 w-5" />
-            </Button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="end">
-            <DropdownMenuItem onClick={() => setIsEditing(true)}>
-              <Edit2 className="h-4 w-4 mr-2" />
-              编辑信息
-            </DropdownMenuItem>
-            <DropdownMenuItem 
-              className="text-destructive" 
-              onClick={() => setIsDeleteDialogOpen(true)}
-            >
-              <Trash2 className="h-4 w-4 mr-2" />
-              删除书籍
-            </DropdownMenuItem>
-          </DropdownMenuContent>
-        </DropdownMenu>
       </div>
 
       {/* Book Info Card */}
@@ -521,31 +489,17 @@ export function BookDetail({
                       )}
                     </div>
                     {editingAnnotation?.id !== annotation.id && (
-                      <DropdownMenu>
-                        <DropdownMenuTrigger asChild>
-                          <Button variant="ghost" size="icon" className="h-8 w-8">
-                            <MoreVertical className="h-4 w-4" />
-                          </Button>
-                        </DropdownMenuTrigger>
-                        <DropdownMenuContent align="end">
-                          <DropdownMenuItem
-                            onClick={() => {
-                              setEditingAnnotation(annotation);
-                              setEditContent(annotation.content);
-                            }}
-                          >
-                            <Edit2 className="h-4 w-4 mr-2" />
-                            编辑
-                          </DropdownMenuItem>
-                          <DropdownMenuItem
-                            className="text-destructive"
-                            onClick={() => handleDeleteAnnotation(annotation.id)}
-                          >
-                            <Trash2 className="h-4 w-4 mr-2" />
-                            删除
-                          </DropdownMenuItem>
-                        </DropdownMenuContent>
-                      </DropdownMenu>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-8 w-8"
+                        onClick={() => {
+                          setEditingAnnotation(annotation);
+                          setEditContent(annotation.content);
+                        }}
+                      >
+                        <Edit2 className="h-4 w-4" />
+                      </Button>
                     )}
                   </div>
                 </div>

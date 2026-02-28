@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { isApp, checkPermission, getBooks } from './native-fs';
 import { Tabs, TabsContent } from '@/components/ui/tabs';
 import { Toaster } from '@/components/ui/sonner';
 import { toast } from 'sonner';
@@ -106,6 +107,18 @@ function App() {
       if (pdfUrl) URL.revokeObjectURL(pdfUrl);
     };
   }, [pdfUrl]);
+
+  useEffect(() => {
+    if (isApp) {
+      checkPermission().then((hasPermission) => {
+        if (hasPermission) {
+          getBooks().then(books => {
+          console.log('本地知识库书籍:', books);
+          });
+        }
+      });
+    }
+  }, []);
 
   const handleBookClick = (book: Book) => {
     setSelectedBookId(book.id);

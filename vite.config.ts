@@ -3,8 +3,11 @@ import react from "@vitejs/plugin-react";
 import { defineConfig } from "vite";
 import { VitePWA } from 'vite-plugin-pwa';
 
-export default defineConfig({
-  base: '/Jian/',
+// https://vitejs.dev/config/
+export default defineConfig(({ mode }) => ({
+  // 关键：APK 用相对路径 './'，GitHub Pages 用 '/Jian/'
+  base: mode === 'apk' ? './' : '/Jian/',
+  
   plugins: [
     react(),
     VitePWA({
@@ -19,8 +22,9 @@ export default defineConfig({
         theme_color: '#3b82f6',
         background_color: '#ffffff',
         display: 'standalone',
-        start_url: '/Jian/',
-        scope: '/Jian/',
+        // 关键：根据模式设置不同的 start_url 和 scope
+        start_url: mode === 'apk' ? './' : '/Jian/',
+        scope: mode === 'apk' ? './' : '/Jian/',
         icons: [
           {
             src: 'icon-192x192.png',
@@ -55,4 +59,4 @@ export default defineConfig({
   optimizeDeps: {
     exclude: ['react-window', 'react-virtualized-auto-sizer'],
   },
-});
+}));

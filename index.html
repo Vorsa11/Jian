@@ -2,16 +2,38 @@
 <html lang="zh-CN">
   <head>
     <meta charset="UTF-8" />
-    <!-- 关键修改：添加 viewport-fit=cover 和其他移动端优化 -->
+    <!-- 关键：viewport-fit=cover 让内容延伸到刘海/挖孔区域，实现真正全屏 -->
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+    
+    <!-- WebView 应用全屏配置 -->
     <meta name="apple-mobile-web-app-capable" content="yes" />
+    <!-- 改为 default 保持状态栏可见但应用控制布局，或 black-translucent 让内容顶到最上面 -->
     <meta name="apple-mobile-web-app-status-bar-style" content="default" />
     <meta name="format-detection" content="telephone=no" />
+    
+    <!-- 固定纯白主题（无暗色模式） -->
     <meta name="theme-color" content="#ffffff" />
+    
     <title>我的知识库</title>
+    
+    <!-- 禁止电话号码自动检测，防止阅读文本中的数字变蓝 -->
+    <meta name="format-detection" content="telephone=no, email=no, address=no" />
+    
+    <!-- 针对 WebView 的额外优化 -->
+    <meta name="msapplication-tap-highlight" content="no" />
   </head>
   <body>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
+    
+    <!-- WebView 桥接检测（如果以后需要调用原生功能） -->
+    <script>
+      // 标记当前为 App 环境（供 React 组件判断）
+      window.isApp = true;
+      // 如果是 Capacitor/Cordova，会自动注入相关对象
+      document.addEventListener('deviceready', () => {
+        console.log('App is ready');
+      }, false);
+    </script>
   </body>
 </html>

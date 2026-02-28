@@ -6,6 +6,8 @@ import React, {
   useCallback,
 } from 'react';
 import { useVirtualizer, type VirtualItem, type Virtualizer } from '@tanstack/react-virtual';
+// 关键新增：导入 Capacitor StatusBar
+import { StatusBar } from '@capacitor/status-bar';
 
 // ============================== 类型定义 ==============================
 interface FlattenedItem {
@@ -90,7 +92,7 @@ const decodeBuffer = (buffer: ArrayBuffer, encoding?: string): string => {
 
 const tryRecoverGbkFromMojibake = (text: string): string => {
   try {
-    const gbkSignatures = /[ʵϰгҵģʽһʮ·�����]+/;
+    const gbkSignatures = /[ʵϰгҵģʽһʮ·     ]+/;
     const highByteRatio = (text.match(/[\x80-\xff]/g) || []).length / text.length;
     
     if (gbkSignatures.test(text) || highByteRatio > 0.2) {
@@ -111,7 +113,7 @@ const tryRecoverGbkFromMojibake = (text: string): string => {
         try {
           const decoder = new TextDecoder('gb18030', { fatal: false });
           const decoded = decoder.decode(bytes);
-          const stillGarbled = (decoded.match(/[ʵϰгҵģʽһʮ·�]/g) || []).length;
+          const stillGarbled = (decoded.match(/[ʵϰгҵģʽһʮ· ]/g) || []).length;
           if (stillGarbled < decoded.length * 0.01) {
             console.log('GBK 修复成功');
             return decoded;
@@ -131,7 +133,7 @@ const cleanContent = (text: string): string => {
   cleaned = cleaned.replace(/^\uFEFF|^\uFFFE/g, '');
   cleaned = cleaned.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
   cleaned = cleaned.replace(/[ \t]+$/gm, '');
-  cleaned = cleaned.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, '');
+  cleaned = cleaned.replace(/[\x00-\u0008\u000b\u000c\u000e-\u001f\x7f]/g, '');
   cleaned = cleaned.replace(/\n{3,}/g, '\n\n');
   cleaned = cleaned.trim();
   
@@ -239,7 +241,7 @@ export const TextReader: React.FC<TextReaderProps> = ({
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [isReady, setIsReady] = useState(false);
   
-  // 安全区域高度（刘海屏适配）
+  // 安全区域高度（仅普通模式使用）
   const [safeAreaTop, setSafeAreaTop] = useState(0);
   const [safeAreaBottom, setSafeAreaBottom] = useState(0);
   
@@ -250,10 +252,9 @@ export const TextReader: React.FC<TextReaderProps> = ({
   
   const theme = THEMES[settings.theme] || THEMES[0];
 
-  // 获取安全区域高度
+  // 获取安全区域（env() API）- 仅用于普通模式
   useEffect(() => {
     const updateSafeArea = () => {
-      // 使用 CSS 环境变量获取安全区域
       const style = document.createElement('div');
       style.style.position = 'fixed';
       style.style.paddingTop = 'env(safe-area-inset-top)';
@@ -348,9 +349,17 @@ export const TextReader: React.FC<TextReaderProps> = ({
     }
   }, [virtualizer.getVirtualItems(), items, bookId, currentChapter]);
   
-  // UI自动隐藏
+  // UI自动隐藏（全屏模式下默认隐藏UI）
   useEffect(() => {
-    if (!settings.autoHideHeader || showSettings || showChapters) {
+    if (isFullscreen) {
+      setShowUI(false);
+    } else {
+      setShowUI(true);
+    }
+  }, [isFullscreen]);
+  
+  useEffect(() => {
+    if (!settings.autoHideHeader || showSettings || showChapters || isFullscreen) {
       clearTimeout(uiTimeoutRef.current);
       return;
     }
@@ -360,21 +369,24 @@ export const TextReader: React.FC<TextReaderProps> = ({
     }, 4000);
     
     return () => clearTimeout(uiTimeoutRef.current);
-  }, [settings.autoHideHeader, showSettings, showChapters, showUI]);
+  }, [settings.autoHideHeader, showSettings, showChapters, showUI, isFullscreen]);
   
-  // 全屏监听
+  // 全屏监听（用于处理通过其他方式退出全屏的情况）
   useEffect(() => {
     const handler = () => {
-      setIsFullscreen(!!document.fullscreenElement);
-      // 全屏状态变化时重新计算安全区域
+      const newFullscreen = !!document.fullscreenElement;
+      if (!newFullscreen && isFullscreen) {
+        // 如果通过系统手势退出全屏，恢复状态栏
+        StatusBar.show().catch(() => {});
+      }
+      setIsFullscreen(newFullscreen);
       setTimeout(() => {
-        const event = new Event('resize');
-        window.dispatchEvent(event);
+        virtualizer.measure();
       }, 100);
     };
     document.addEventListener('fullscreenchange', handler);
     return () => document.removeEventListener('fullscreenchange', handler);
-  }, []);
+  }, [virtualizer, isFullscreen]);
   
   // 键盘快捷键
   useEffect(() => {
@@ -388,7 +400,11 @@ export const TextReader: React.FC<TextReaderProps> = ({
         e.preventDefault();
         parentRef.current?.scrollBy({ top: window.innerHeight * 0.85, behavior: 'smooth' });
       } else if (e.key === 'Escape') {
-        if (isFullscreen) document.exitFullscreen();
+        if (isFullscreen) {
+          // 退出全屏时恢复状态栏
+          StatusBar.show().catch(() => {});
+          document.exitFullscreen();
+        }
         else if (showSettings) setShowSettings(false);
         else if (showChapters) setShowChapters(false);
         else setShowUI(v => !v);
@@ -399,15 +415,35 @@ export const TextReader: React.FC<TextReaderProps> = ({
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [showSettings, showChapters, isFullscreen]);
   
+  // 关键修改：全屏切换函数，集成 Capacitor StatusBar
   const toggleFullscreen = useCallback(async () => {
     try {
       if (!document.fullscreenElement) {
+        // 进入全屏：先隐藏状态栏（完全沉浸式）
+        await StatusBar.hide();
         await document.documentElement.requestFullscreen();
+        setIsFullscreen(true);
       } else {
+        // 退出全屏：恢复状态栏
+        await StatusBar.show();
         await document.exitFullscreen();
+        setIsFullscreen(false);
       }
-    } catch (e) {}
+    } catch (e) {
+      console.error('Fullscreen error:', e);
+      // 如果出错，至少确保状态栏恢复
+      StatusBar.show().catch(() => {});
+    }
   }, []);
+  
+  // 组件卸载时确保恢复状态栏（防止异常退出导致状态栏一直隐藏）
+  useEffect(() => {
+    return () => {
+      if (isFullscreen) {
+        StatusBar.show().catch(() => {});
+      }
+    };
+  }, [isFullscreen]);
   
   // 章节列表
   const chapters = useMemo(() => {
@@ -512,9 +548,9 @@ export const TextReader: React.FC<TextReaderProps> = ({
   
   if (!items.length) return null;
   
-  // 计算安全区域：全屏时如果有刘海，留出安全距离；非全屏按正常处理
-  const headerOffset = isFullscreen ? Math.max(safeAreaTop, 0) : 0;
-  const footerOffset = isFullscreen ? Math.max(safeAreaBottom, 0) : 0;
+  // 核心计算：全屏模式 headerOffset=0（内容顶到屏幕最顶端）
+  const headerOffset = isFullscreen ? 0 : safeAreaTop;
+  const footerOffset = isFullscreen ? 0 : safeAreaBottom;
   
   return (
     <div 
@@ -523,17 +559,14 @@ export const TextReader: React.FC<TextReaderProps> = ({
         backgroundColor: theme.bg,
         fontFamily: settings.fontFamily,
         WebkitFontSmoothing: 'antialiased',
-        // 关键：使用 padding 将内容推离刘海和底部手势条
-        paddingTop: headerOffset,
-        paddingBottom: footerOffset,
       }}
     >
-      {/* 顶部状态栏背景填充（全屏时隐藏状态栏区域用背景色填充） */}
-      {isFullscreen && (
+      {/* 顶部状态栏背景填充（仅普通模式） */}
+      {!isFullscreen && (
         <div 
           className="fixed top-0 left-0 right-0 z-[60] pointer-events-none"
           style={{
-            height: safeAreaTop > 0 ? safeAreaTop : 0,
+            height: headerOffset,
             backgroundColor: theme.bg,
           }}
         />
@@ -549,15 +582,15 @@ export const TextReader: React.FC<TextReaderProps> = ({
         </div>
       )}
       
-      {/* 顶部栏 - 全屏时向下偏移避开刘海，非全屏正常显示 */}
+      {/* 顶部栏 */}
       <header 
         className={`absolute left-0 right-0 z-40 transition-all duration-300 ${
           showUI ? 'opacity-100 translate-y-0' : 'opacity-0 -translate-y-full pointer-events-none'
         }`}
         style={{ 
-          top: headerOffset, // 关键：向下偏移避开刘海
-          backgroundColor: `${theme.bg}f0`, 
-          backdropFilter: 'blur(12px)',
+          top: headerOffset,
+          backgroundColor: isFullscreen ? theme.bg : `${theme.bg}f0`, 
+          backdropFilter: isFullscreen ? 'none' : 'blur(12px)',
           borderBottom: `1px solid ${theme.border}`,
         }}
       >
@@ -601,16 +634,14 @@ export const TextReader: React.FC<TextReaderProps> = ({
         </div>
       </header>
       
-      {/* 阅读区域 - 根据全屏状态调整 padding */}
+      {/* 阅读区域 */}
       <div 
         ref={parentRef}
         className="flex-1 overflow-y-auto relative w-full h-full"
         onClick={handleContainerClick}
         style={{
-          // 关键：内容区域顶部留出空间给 header + 安全区域
-          paddingTop: showUI ? (56 + headerOffset) : (24 + headerOffset),
-          // 关键：底部留出空间给 footer + 安全区域
-          paddingBottom: showUI ? (64 + footerOffset) : (40 + footerOffset),
+          paddingTop: showUI ? (56 + headerOffset) : (isFullscreen ? 0 : 24 + headerOffset),
+          paddingBottom: showUI ? (64 + footerOffset) : (isFullscreen ? 0 : 40 + footerOffset),
         }}
       >
         <div
@@ -632,13 +663,13 @@ export const TextReader: React.FC<TextReaderProps> = ({
         </div>
       </div>
       
-      {/* 底部栏 - 全屏时向上偏移避开底部手势条 */}
+      {/* 底部栏 */}
       <footer 
         className={`absolute left-0 right-0 z-40 transition-all duration-300 ${
           showUI ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-full pointer-events-none'
         }`}
         style={{ 
-          bottom: footerOffset, // 关键：向上偏移
+          bottom: footerOffset,
           backgroundColor: `${theme.bg}f0`, 
           backdropFilter: 'blur(12px)',
           borderTop: `1px solid ${theme.border}`,
@@ -690,14 +721,14 @@ export const TextReader: React.FC<TextReaderProps> = ({
         </div>
       </footer>
       
-      {/* 目录面板 - 适配安全区域 */}
+      {/* 目录面板 */}
       {showChapters && (
         <div className="absolute inset-0 z-50 flex">
           <div 
             className="w-[min(320px,85vw)] h-full shadow-2xl flex flex-col"
             style={{ 
               backgroundColor: theme.bg,
-              paddingTop: headerOffset, // 适配刘海
+              paddingTop: headerOffset,
             }}
           >
             <div className="p-4 border-b flex items-center justify-between" style={{ borderColor: theme.border }}>
@@ -725,7 +756,7 @@ export const TextReader: React.FC<TextReaderProps> = ({
         </div>
       )}
       
-      {/* 设置面板 - 适配安全区域 */}
+      {/* 设置面板 */}
       {showSettings && (
         <div className="absolute inset-0 z-50 flex justify-end">
           <div className="flex-1 bg-black/30" onClick={() => setShowSettings(false)} />
@@ -733,7 +764,7 @@ export const TextReader: React.FC<TextReaderProps> = ({
             className="w-[min(360px,90vw)] h-full shadow-2xl p-6 overflow-y-auto"
             style={{ 
               backgroundColor: theme.bg,
-              paddingTop: 24 + headerOffset, // 适配刘海
+              paddingTop: 24 + headerOffset,
             }}
           >
             <div className="flex items-center justify-between mb-6">
@@ -819,7 +850,7 @@ export const readFile = (file: File): Promise<{ buffer: ArrayBuffer; text: strin
       try {
         const gbDecoder = new TextDecoder('gb18030', { fatal: false });
         text = gbDecoder.decode(bytes);
-        if ((text.match(/[ʵϰгҵģʽһʮ·�]/g) || []).length > text.length * 0.1) {
+        if ((text.match(/[ʵϰгҵģʽһʮ· ]/g) || []).length > text.length * 0.1) {
           throw new Error('可能不是 GBK');
         }
       } catch {
