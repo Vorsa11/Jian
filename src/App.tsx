@@ -10,12 +10,14 @@ import {
   Upload,
   FileText,
   BookOpen,
-  RefreshCw,
   Download,
-  UploadCloud,
-  Smartphone,
   Code2,
   PieChart,
+  Cloud,
+  Database,
+  Cog,
+  ChevronRight,
+  HardDrive,
 } from 'lucide-react';
 import { useLibrary } from '@/hooks/useLibrary';
 import { BookList } from '@/components/BookList';
@@ -30,15 +32,14 @@ import { ProjectsPanel } from '@/components/ProjectsPanel';
 import { SchedulePanel } from '@/components/SchedulePanel';
 import { CodingPanel } from '@/components/CodingPanel';
 import { PomodoroTimer } from '@/components/PomodoroTimer';
+import FileManager from '@/components/FileManager';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
-import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from '@/components/ui/sheet';
-import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
-import type { Book, FilterCriteria, PDFAnnotation } from '@/types';
+import { Separator } from '@/components/ui/separator';
+import { ScrollArea } from '@/components/ui/scroll-area';
+import type { Book, FilterCriteria } from '@/types';
 import './App.css';
 
-// Navigation items - 日程-编程-书籍-项目
 const navItems = [
   { id: 'schedule', label: '日程', icon: Calendar },
   { id: 'coding', label: '编程', icon: Code2 },
@@ -51,7 +52,6 @@ function App() {
     categories,
     projects,
     notes,
-    sync,
     isLoaded,
     addBook,
     updateBook,
@@ -82,10 +82,6 @@ function App() {
     getStats,
     exportData,
     importData,
-    regenerateSyncCode,
-    syncDataToCloud,
-    syncDataFromCloud,
-    mergeData,
   } = useLibrary();
 
   const [selectedBookId, setSelectedBookId] = useState<string | null>(null);
@@ -96,8 +92,6 @@ function App() {
   const [pdfUrl, setPdfUrl] = useState<string | null>(null);
   const [readingBookId, setReadingBookId] = useState<string | null>(null);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
-  const [isSyncOpen, setIsSyncOpen] = useState(false);
-  const [syncInputCode, setSyncInputCode] = useState('');
   const [isReadingText, setIsReadingText] = useState(false);
   const [textContent, setTextContent] = useState('');
 
@@ -107,7 +101,6 @@ function App() {
   const allTags = getAllTags();
   const stats = getStats();
 
-  // Cleanup PDF URL on unmount
   useEffect(() => {
     return () => {
       if (pdfUrl) URL.revokeObjectURL(pdfUrl);
@@ -200,9 +193,13 @@ function App() {
     }
   };
 
-  const handleAddPDFAnnotationWrapper = (annotation: Omit<PDFAnnotation, 'id' | 'createdAt' | 'updatedAt'>) => {
-    if (readingBook) {
-      addPDFAnnotation({ ...annotation, bookId: readingBook.id });
+  const handleAddPDFAnnotationWrapper = (annotation: any) => {
+    if (readingBook?.id) {
+      addPDFAnnotation({ 
+        ...annotation, 
+        bookId: readingBook.id,
+        type: annotation.type || 'highlight'
+      });
     }
   };
 
@@ -261,40 +258,6 @@ function App() {
     }
   };
 
-  const handleSync = () => {
-    const syncCode = sync.syncCode || regenerateSyncCode();
-    const success = syncDataToCloud(syncCode, {
-      books: filteredBooks,
-      categories,
-      pdfAnnotations: [],
-      projects,
-      notes,
-      sync: { ...sync, syncCode },
-    });
-    if (success) {
-      toast.success('数据已上传到云端，请在其他设备输入此代码');
-    } else {
-      toast.error('同步失败，请重试');
-    }
-    setIsSyncOpen(true);
-  };
-
-  const handleSyncFromCloud = () => {
-    if (!syncInputCode.trim()) {
-      toast.error('请输入同步代码');
-      return;
-    }
-    const remoteData = syncDataFromCloud(syncInputCode.toUpperCase());
-    if (remoteData) {
-      mergeData(remoteData);
-      toast.success('同步成功！数据已合并');
-      setIsSyncOpen(false);
-      setSyncInputCode('');
-    } else {
-      toast.error('未找到该同步代码的数据，请检查代码是否正确');
-    }
-  };
-
   if (!isLoaded) {
     return (
       <div className="flex items-center justify-center h-screen bg-background">
@@ -327,89 +290,14 @@ function App() {
             
             <PomodoroTimer />
 
-            <Button variant="ghost" size="sm" onClick={handleSync} className="gap-2">
-              <RefreshCw className="h-4 w-4" />
-              <span className="hidden sm:inline">同步</span>
+            <Button 
+              variant="ghost" 
+              size="icon"
+              onClick={() => setIsSettingsOpen(true)}
+              className={isSettingsOpen ? 'text-primary' : ''}
+            >
+              <Settings className="h-5 w-5" />
             </Button>
-            
-            <Sheet open={isSettingsOpen} onOpenChange={setIsSettingsOpen}>
-              <SheetTrigger asChild>
-                <Button variant="ghost" size="icon">
-                  <Settings className="h-5 w-5" />
-                </Button>
-              </SheetTrigger>
-              <SheetContent side="right" className="w-full sm:max-w-md">
-                <SheetHeader>
-                  <SheetTitle>设置</SheetTitle>
-                </SheetHeader>
-                <div className="py-4 space-y-6">
-                  <div className="space-y-3">
-                    <h3 className="text-sm font-medium flex items-center gap-2">
-                      <Smartphone className="h-4 w-4" />
-                      跨设备同步
-                    </h3>
-                    <div className="p-3 bg-muted rounded-lg">
-                      <p className="text-xs text-muted-foreground mb-2">您的同步代码</p>
-                      <div className="flex items-center gap-2">
-                        <code className="flex-1 p-2 bg-background rounded text-lg font-mono tracking-wider">
-                          {sync.syncCode}
-                        </code>
-                        <Button size="sm" variant="outline" onClick={() => {
-                          const newCode = regenerateSyncCode();
-                          toast.success('同步代码已更新: ' + newCode);
-                        }}>
-                          刷新
-                        </Button>
-                      </div>
-                      <p className="text-xs text-muted-foreground mt-2">
-                        在其他设备输入此代码即可同步数据
-                      </p>
-                    </div>
-                  </div>
-
-                  <div className="space-y-3">
-                    <h3 className="text-sm font-medium">数据管理</h3>
-                    <div className="space-y-2">
-                      <Button variant="outline" className="w-full gap-2" onClick={handleExport}>
-                        <Download className="h-4 w-4" />
-                        导出备份
-                      </Button>
-                      <label className="flex">
-                        <input
-                          type="file"
-                          accept=".json"
-                          className="hidden"
-                          onChange={(e) => {
-                            const file = e.target.files?.[0];
-                            if (file) {
-                              const reader = new FileReader();
-                              reader.onload = (ev) => {
-                                handleImport(ev.target?.result as string);
-                              };
-                              reader.readAsText(file);
-                            }
-                          }}
-                        />
-                        <Button variant="outline" className="w-full gap-2" asChild>
-                          <span><UploadCloud className="h-4 w-4" />导入数据</span>
-                        </Button>
-                      </label>
-                    </div>
-                  </div>
-
-                  <SettingsPanel
-                    categories={categories}
-                    onAddCategory={addCategory}
-                    onDeleteCategory={deleteCategory}
-                  />
-
-                  <div className="pt-4 border-t text-center">
-                    <p className="text-sm text-muted-foreground">简 v1.4.0</p>
-                    <p className="text-xs text-muted-foreground mt-1">简约个人知识管理系统</p>
-                  </div>
-                </div>
-              </SheetContent>
-            </Sheet>
           </div>
         </div>
       </header>
@@ -580,7 +468,131 @@ function App() {
         </div>
       </nav>
 
-      {/* Dialogs */}
+      {/* Settings Modal - 修复双X和滚动问题 */}
+      <Dialog open={isSettingsOpen} onOpenChange={setIsSettingsOpen}>
+        <DialogContent className="max-w-2xl max-h-[85vh] p-0 gap-0 overflow-hidden">
+          <DialogHeader className="px-6 py-4 border-b bg-muted/30 shrink-0">
+            <DialogTitle className="flex items-center gap-2 text-lg">
+              <Cog className="h-5 w-5 text-primary" />
+              设置
+            </DialogTitle>
+          </DialogHeader>
+          
+          <ScrollArea className="h-[calc(85vh-4rem)] overflow-y-auto scrollbar-hide">
+            <div className="p-6 space-y-8">
+              
+              {/* 云文献库板块 */}
+              <section>
+                <div className="flex items-center gap-2 mb-4">
+                  <div className="p-2 bg-blue-100 dark:bg-blue-900 rounded-lg">
+                    <Cloud className="h-5 w-5 text-blue-600 dark:text-blue-300" />
+                  </div>
+                  <div>
+                    <h3 className="font-semibold text-lg">云文献库</h3>
+                    <p className="text-sm text-muted-foreground">基于 GitHub 的无限空间存储</p>
+                  </div>
+                </div>
+                <div className="bg-card border rounded-2xl p-1 shadow-sm">
+                  <FileManager />
+                </div>
+              </section>
+
+              <Separator />
+
+              {/* 数据管理板块 */}
+              <section>
+                <div className="flex items-center gap-2 mb-4">
+                  <div className="p-2 bg-green-100 dark:bg-green-900 rounded-lg">
+                    <Database className="h-5 w-5 text-green-600 dark:text-green-300" />
+                  </div>
+                  <div>
+                    <h3 className="font-semibold text-lg">数据管理</h3>
+                    <p className="text-sm text-muted-foreground">本地数据备份与恢复</p>
+                  </div>
+                </div>
+                
+                <div className="grid gap-3">
+                  <button
+                    onClick={handleExport}
+                    className="flex items-center justify-between p-4 rounded-xl border bg-card hover:bg-accent transition-colors text-left group"
+                  >
+                    <div className="flex items-center gap-3">
+                      <div className="p-2 bg-muted rounded-lg group-hover:bg-background transition-colors">
+                        <Download className="h-4 w-4" />
+                      </div>
+                      <div>
+                        <div className="font-medium">导出备份</div>
+                        <div className="text-sm text-muted-foreground">将数据保存为 JSON 文件</div>
+                      </div>
+                    </div>
+                    <ChevronRight className="h-5 w-5 text-muted-foreground" />
+                  </button>
+
+                  <label className="cursor-pointer block">
+                    <input
+                      type="file"
+                      accept=".json"
+                      className="hidden"
+                      onChange={(e) => {
+                        const file = e.target.files?.[0];
+                        if (file) {
+                          const reader = new FileReader();
+                          reader.onload = (ev) => {
+                            handleImport(ev.target?.result as string);
+                          };
+                          reader.readAsText(file);
+                        }
+                      }}
+                    />
+                    <div className="flex items-center justify-between p-4 rounded-xl border bg-card hover:bg-accent transition-colors text-left group">
+                      <div className="flex items-center gap-3">
+                        <div className="p-2 bg-muted rounded-lg group-hover:bg-background transition-colors">
+                          <HardDrive className="h-4 w-4" />
+                        </div>
+                        <div>
+                          <div className="font-medium">导入数据</div>
+                          <div className="text-sm text-muted-foreground">从备份文件恢复数据</div>
+                        </div>
+                      </div>
+                      <ChevronRight className="h-5 w-5 text-muted-foreground" />
+                    </div>
+                  </label>
+                </div>
+              </section>
+
+              <Separator />
+
+              {/* 应用设置板块 */}
+              <section>
+                <div className="flex items-center gap-2 mb-4">
+                  <div className="p-2 bg-purple-100 dark:bg-purple-900 rounded-lg">
+                    <Cog className="h-5 w-5 text-purple-600 dark:text-purple-300" />
+                  </div>
+                  <div>
+                    <h3 className="font-semibold text-lg">应用设置</h3>
+                    <p className="text-sm text-muted-foreground">分类管理与偏好</p>
+                  </div>
+                </div>
+                <div className="bg-card border rounded-2xl p-4 shadow-sm">
+                  <SettingsPanel
+                    categories={categories}
+                    onAddCategory={addCategory}
+                    onDeleteCategory={deleteCategory}
+                  />
+                </div>
+              </section>
+
+              {/* 底部信息 */}
+              <div className="pt-4 text-center space-y-1 text-muted-foreground">
+                <p className="text-sm font-medium">简 v1.4.0</p>
+                <p className="text-xs">基于 GitHub 的分布式知识库</p>
+              </div>
+            </div>
+          </ScrollArea>
+        </DialogContent>
+      </Dialog>
+
+      {/* 其他 Dialogs */}
       <AddBookDialog
         open={isAddDialogOpen}
         onOpenChange={setIsAddDialogOpen}
@@ -602,7 +614,7 @@ function App() {
               <PDFViewer
                 fileUrl={pdfUrl}
                 book={readingBook}
-                annotations={getBookPDFAnnotations(readingBook.id)}
+                annotations={getBookPDFAnnotations(readingBook.id) as any}
                 onAddAnnotation={handleAddPDFAnnotationWrapper}
                 onUpdateAnnotation={updatePDFAnnotation}
                 onDeleteAnnotation={deletePDFAnnotation}
@@ -624,32 +636,6 @@ function App() {
           }}
         />
       )}
-
-      <Dialog open={isSyncOpen} onOpenChange={setIsSyncOpen}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>跨设备同步</DialogTitle>
-          </DialogHeader>
-          <div className="space-y-4 py-4">
-            <div className="p-4 bg-primary/10 rounded-lg text-center">
-              <p className="text-sm text-muted-foreground mb-2">您的同步代码</p>
-              <code className="text-2xl font-mono tracking-widest">{sync.syncCode}</code>
-            </div>
-            <div className="space-y-2">
-              <Label>在其他设备输入此代码</Label>
-              <div className="flex gap-2">
-                <Input 
-                  placeholder="输入同步代码" 
-                  value={syncInputCode}
-                  onChange={(e) => setSyncInputCode(e.target.value.toUpperCase())}
-                  maxLength={6}
-                />
-                <Button onClick={handleSyncFromCloud}>同步</Button>
-              </div>
-            </div>
-          </div>
-        </DialogContent>
-      </Dialog>
 
       <Toaster 
         position="top-center"

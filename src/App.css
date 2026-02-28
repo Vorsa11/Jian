@@ -271,3 +271,41 @@ body::-webkit-scrollbar {
     right: 1.5rem; /* 24px → 更安全 */
   }
 }
+
+/* ================== 10. 隐藏式滚动条（保留滚动功能） ================== */
+.scrollbar-hide {
+  -ms-overflow-style: none;  /* IE and Edge */
+  scrollbar-width: none;  /* Firefox */
+}
+
+.scrollbar-hide::-webkit-scrollbar {
+  display: none;  /* Chrome, Safari, Opera */
+}
+
+/* ================== 11. 设置面板专用优化 ================== */
+.settings-content {
+  max-height: calc(85vh - 4rem);
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+}
+
+.settings-content::-webkit-scrollbar {
+  width: 0px;
+  background: transparent;
+}
+
+/* 防止设置面板内容被挤压 */
+.settings-section {
+  flex-shrink: 0;
+}
+
+/* 设置面板卡片hover效果优化 */
+.settings-card {
+  transition: all 0.2s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.settings-card:hover {
+  transform: translateY(-1px);
+  box-shadow: var(--shadow-md);
+}
