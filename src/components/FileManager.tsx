@@ -3,8 +3,8 @@ import { createClient } from '@supabase/supabase-js'
 import type { User } from '@supabase/supabase-js'
 
 // ✅ 修复：去掉URL末尾空格
-const SUPABASE_URL = 'https://eppgffcwmqawegngstqq.supabase.co'
-const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImVwcGdmZmN3bWdhd2VnbmdzdHFxIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzIyNDUzNDIsImV4cCI6MjA4NzgyMTM0Mn0.Wdtc_a9hcd6yKgHYWEtnGeXW_3lhcraNYy3XCHgB4NU'
+const SUPABASE_URL = 'https://qgchjazbxtdnezjlwtrh.supabase.co'
+const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InFnY2hqYXpieHRkbmV6amx3dHJoIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzIyNzQwNDEsImV4cCI6MjA4Nzg1MDA0MX0.bWte3zs3LApyxVKLKIwjCjJa-M0KpJwPnQzjfkEerxs'
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY)
 
